@@ -1,0 +1,10 @@
+streamlit
+pandas
+bcrypt
+geopy
+folium
+streamlit-folium
+streamlit-calendar
+googlemaps
+holidays
+streamlit-gsheets-connection
