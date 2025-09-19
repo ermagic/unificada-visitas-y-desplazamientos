@@ -1,37 +1,42 @@
-# Fichero: database.py
+# Fichero: database.py (Versión final con gspread)
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+from gspread_pandas import Spread, Client
 
-# Creamos la conexión usando los secretos que ya configuraste
-# Esto asume que en tu secrets.toml tienes [connections.gcs]
-conn = st.connection("gcs", type=GSheetsConnection)
+# NOTA: No es necesario cambiar auth.py o admin.py porque mantenemos los mismos nombres de función.
+
+def get_client() -> Client:
+    """Crea y devuelve un cliente de gspread_pandas autenticado."""
+    # Usa las mismas credenciales JSON que ya tienes en tus secretos.
+    creds = st.secrets["gcp_service_account"]
+    client = Client(creds)
+    return client
+
+def get_spreadsheet(client: Client) -> Spread:
+    """Abre la hoja de cálculo de Google Sheets."""
+    # El nombre de la hoja de cálculo debe estar en tus secretos.
+    sheet_name = st.secrets["gcp_service_account"]["sheet_name"]
+    return Spread(sheet_name, client=client)
 
 def get_data(worksheet_name: str) -> pd.DataFrame:
-    """Función genérica para leer datos de cualquier pestaña."""
+    """Lee todos los datos de una pestaña de Google Sheets."""
     try:
-        data = conn.read(worksheet=worksheet_name, usecols=lambda x: x not in [None, ''])
-        # Asegurarnos que las columnas vacías no se lean como 'Unnamed'
-        data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
-        return data
+        spread = get_spreadsheet(get_client())
+        # Carga la hoja como un DataFrame, interpretando la primera fila como encabezado.
+        df = spread.sheet_to_df(sheet=worksheet_name, index=False)
+        return df
     except Exception as e:
-        st.error(f"No se pudo leer la hoja de cálculo '{worksheet_name}': {e}")
+        # Si la hoja de cálculo no existe o está vacía, puede dar un error.
+        st.error(f"Error al leer la hoja '{worksheet_name}': {e}")
         return pd.DataFrame()
 
 def update_data(worksheet_name: str, data: pd.DataFrame):
-    """Función para sobreescribir todos los datos en una pestaña."""
+    """Sobrescribe todos los datos de una pestaña con un nuevo DataFrame."""
     try:
-        conn.update(worksheet=worksheet_name, data=data)
-        st.success("Datos actualizados correctamente.")
+        spread = get_spreadsheet(get_client())
+        # Sobrescribe la hoja con el nuevo DataFrame.
+        spread.df_to_sheet(df=data, sheet=worksheet_name, index=False, replace=True)
+        return True
     except Exception as e:
         st.error(f"No se pudo actualizar la hoja de cálculo: {e}")
-
-def add_row(worksheet_name: str, new_row_df: pd.DataFrame):
-    """Función para añadir una nueva fila a una pestaña."""
-    try:
-        # Leemos los datos existentes para no borrarlos
-        existing_data = get_data(worksheet_name)
-        updated_df = pd.concat([existing_data, new_row_df], ignore_index=True)
-        conn.update(worksheet=worksheet_name, data=updated_df)
-    except Exception as e:
-        st.error(f"No se pudo añadir la fila: {e}")
+        return False
