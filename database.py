@@ -1,40 +1,37 @@
-# Fichero: database.py (Versión final con gspread)
+# Fichero: database.py (Versión final y robusta)
 import streamlit as st
 import pandas as pd
 from gspread_pandas import Spread, Client
-
-# NOTA: No es necesario cambiar auth.py o admin.py porque mantenemos los mismos nombres de función.
+import json
 
 def get_client() -> Client:
     """Crea y devuelve un cliente de gspread_pandas autenticado."""
-    # Usa las mismas credenciales JSON que ya tienes en tus secretos.
-    creds = st.secrets["gcp_service_account"]
-    client = Client(creds)
+    # Lee las credenciales como una única cadena de texto desde los secretos
+    creds_str = st.secrets["gcp_creds"]["json_credentials"]
+    # Convierte la cadena de texto a un diccionario que gspread puede entender
+    creds_dict = json.loads(creds_str)
+    # Autentica y devuelve el cliente
+    client = Client(credentials=creds_dict)
     return client
 
 def get_spreadsheet(client: Client) -> Spread:
     """Abre la hoja de cálculo de Google Sheets."""
-    # El nombre de la hoja de cálculo debe estar en tus secretos.
-    sheet_name = st.secrets["gcp_service_account"]["sheet_name"]
+    sheet_name = st.secrets["gcp_creds"]["sheet_name"]
     return Spread(sheet_name, client=client)
 
 def get_data(worksheet_name: str) -> pd.DataFrame:
     """Lee todos los datos de una pestaña de Google Sheets."""
     try:
         spread = get_spreadsheet(get_client())
-        # Carga la hoja como un DataFrame, interpretando la primera fila como encabezado.
         df = spread.sheet_to_df(sheet=worksheet_name, index=False)
         return df
     except Exception as e:
-        # Si la hoja de cálculo no existe o está vacía, puede dar un error.
-        st.error(f"Error al leer la hoja '{worksheet_name}': {e}")
         return pd.DataFrame()
 
 def update_data(worksheet_name: str, data: pd.DataFrame):
     """Sobrescribe todos los datos de una pestaña con un nuevo DataFrame."""
     try:
         spread = get_spreadsheet(get_client())
-        # Sobrescribe la hoja con el nuevo DataFrame.
         spread.df_to_sheet(df=data, sheet=worksheet_name, index=False, replace=True)
         return True
     except Exception as e:
