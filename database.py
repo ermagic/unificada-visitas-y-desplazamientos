@@ -1,4 +1,4 @@
-# Fichero: database.py (Versión modificada para depuración)
+# Fichero: database.py (Versión de diagnóstico final)
 import streamlit as st
 import pandas as pd
 from gspread_pandas import Spread, Client
@@ -8,6 +8,12 @@ def get_client() -> Client:
     """Crea y devuelve un cliente de gspread_pandas autenticado."""
     try:
         creds_str = st.secrets["gcp_creds"]["json_credentials"]
+        
+        # --- LÍNEA DE DIAGNÓSTICO ---
+        # Esta línea mostrará el contenido exacto del secret en un cuadro amarillo en la app
+        st.warning(f"CONTENIDO SECRETO A DEPURAR:\n\n{creds_str}")
+        # ---------------------------
+
         creds_dict = json.loads(creds_str)
         client = Client(credentials=creds_dict)
         return client
@@ -34,7 +40,6 @@ def get_data(worksheet_name: str) -> pd.DataFrame:
                 df = spread.sheet_to_df(sheet=worksheet_name, index=False)
                 return df
     except Exception as e:
-        # <-- ESTA LÍNEA ES LA QUE NOS MOSTRARÁ EL ERROR REAL
         st.error(f"Error DETALLADO al leer la pestaña '{worksheet_name}': {e}")
     
     return pd.DataFrame()
