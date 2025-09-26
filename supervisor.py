@@ -114,7 +114,8 @@ def mostrar_planificador_supervisor():
                         tiempo_viaje = gmaps.distance_matrix(origen, v['direccion_texto'], mode="driving")['rows'][0]['elements'][0]['duration']['value']
                         hora_actual += timedelta(seconds=tiempo_viaje)
                     v_con_hora = v.copy()
-                    v_con_hora['hora_asignada'] = hora_actual.time()
+                    # --- CORRECCIÓN DEL ERROR: Guardamos la hora como string ---
+                    v_con_hora['hora_asignada'] = hora_actual.strftime('%H:%M')
                     visitas_con_hora.append(v_con_hora)
                     hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
                 plan_con_horas[day] = visitas_con_hora
@@ -126,7 +127,7 @@ def mostrar_planificador_supervisor():
                 nombre_dia = day.strftime('%A, %d de %B').capitalize()
                 with st.expander(f"**{nombre_dia}** ({len(visitas)} visitas)", expanded=True):
                     for v in visitas:
-                        st.markdown(f"- **{v['hora_asignada'].strftime('%H:%M')}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}*)")
+                        st.markdown(f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}*)")
         
         with tab_mapa:
             df_visitas = pd.DataFrame([visit for day_visits in plan.values() for visit in day_visits]).dropna(subset=['lat', 'lon'])
@@ -136,7 +137,7 @@ def mostrar_planificador_supervisor():
                 map_center = [df_visitas['lat'].mean(), df_visitas['lon'].mean()]
                 m = folium.Map(location=map_center, zoom_start=11)
                 try:
-                    location = Nominatim(user_agent="supervisor_map_v2").geocode(PUNTO_INICIO_MARTIN)
+                    location = Nominatim(user_agent="supervisor_map_v3").geocode(PUNTO_INICIO_MARTIN)
                     if location: folium.Marker([location.latitude, location.longitude], popup="Punto de Salida/Llegada", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
                 except Exception: pass
                 
@@ -157,14 +158,23 @@ def mostrar_planificador_supervisor():
             if st.button("✅ Confirmar y Asignar", use_container_width=True, type="primary"):
                 with st.spinner("Actualizando base de datos..."):
                     for day, visitas in st.session_state.plan_con_horas.items():
-                        for v in visitas: supabase.table('visitas').update({'status': 'Asignada a Supervisor', 'fecha_asignada': str(day.date()), 'hora_asignada': v['hora_asignada'].strftime('%H:%M')}).eq('id', v['id']).execute()
-                    if st.session_state.no_asignadas:
+                        for v in visitas:
+                            # --- CORRECCIÓN DEL ERROR: Usamos el string guardado ---
+                            update_data = {
+                                'status': 'Asignada a Supervisor',
+                                'fecha_asignada': str(day.date()),
+                                'hora_asignada': v['hora_asignada']
+                            }
+                            supabase.table('visitas').update(update_data).eq('id', v['id']).execute()
+                    if st.session_state.get('no_asignadas'):
                         ids = [v['id'] for v in st.session_state.no_asignadas]
-                        supabase.table('visitas').update({'status': 'Asignada a Coordinador'}).in_('id', ids).execute()
+                        if ids:
+                            supabase.table('visitas').update({'status': 'Asignada a Coordinador'}).in_('id', ids).execute()
                 st.success("¡Planificación confirmada y asignada en el sistema!")
                 for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
                     if key in st.session_state: del st.session_state[key]
                 st.rerun()
+
         with col2:
             if st.button("📧 Notificar a Coordinadores", use_container_width=True):
                 response = supabase.table('usuarios').select('email').eq('rol', 'coordinador').execute()
@@ -174,13 +184,13 @@ def mostrar_planificador_supervisor():
                     for day, visitas in st.session_state.plan_con_horas.items():
                         body += f"<h4>{day.strftime('%A, %d/%m/%Y').capitalize()}</h4><ul>"
                         for v in visitas:
-                            body += f"<li><b>{v['hora_asignada'].strftime('%H:%M')}h</b>: {v['direccion_texto']} (Equipo: {v['equipo']}) - <i>Propuesta por {v['nombre_coordinador']}</i></li>"
+                            # --- CORRECCIÓN DEL ERROR: Usamos el string guardado ---
+                            body += f"<li><b>{v['hora_asignada']}h</b>: {v['direccion_texto']} (Equipo: {v['equipo']}) - <i>Propuesta por {v['nombre_coordinador']}</i></li>"
                         body += "</ul>"
                     body += "<p>El resto de visitas planificadas han sido asignadas a sus coordinadores correspondientes. Por favor, revisad la plataforma.</p>"
                     send_email(emails, f"Planificación del Supervisor - Semana del {min(plan.keys()).strftime('%d/%m')}", body)
                 else:
                     st.warning("No se encontraron emails de coordinadores para notificar.")
-
 
     if "no_asignadas" in st.session_state and st.session_state.no_asignadas:
         st.warning("Visitas no incluidas en la planificación óptima (serán devueltas a sus coordinadores):")
@@ -197,15 +207,10 @@ def mostrar_planificador_supervisor():
             if st.form_submit_button("Añadir visita manual"):
                 hora_fin = (datetime.combine(date.today(), hora) + timedelta(minutes=45)).time()
                 supabase.table('visitas').insert({
-                    'usuario_id': st.session_state['usuario_id'],
-                    'fecha': str(fecha),
+                    'usuario_id': st.session_state['usuario_id'], 'fecha': str(fecha),
                     'franja_horaria': f"{hora.strftime('%H:%M')}-{hora_fin.strftime('%H:%M')}",
-                    'direccion_texto': direccion,
-                    'equipo': equipo,
-                    'observaciones': observaciones,
-                    'status': 'Asignada a Supervisor',
-                    'fecha_asignada': str(fecha),
-                    'hora_asignada': hora.strftime('%H:%M')
+                    'direccion_texto': direccion, 'equipo': equipo, 'observaciones': observaciones,
+                    'status': 'Asignada a Supervisor', 'fecha_asignada': str(fecha), 'hora_asignada': hora.strftime('%H:%M')
                 }).execute()
                 st.success("Visita manual añadida correctamente.")
                 st.rerun()
