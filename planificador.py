@@ -19,7 +19,7 @@ HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v11")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v12")
         geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
         location = geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
@@ -30,7 +30,48 @@ def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
     if not supabase: st.error("Sin conexión a base de datos."); st.stop()
 
-    tab_planificar, tab_global, tab_mis_visitas = st.tabs(["✍️ Planificar", "🌍 Vista Global", "👀 Mis Visitas"])
+    tab_mis_visitas, tab_planificar, tab_global = st.tabs(["✅ Mis Tareas", "✍️ Planificar", "🌍 Vista Global"])
+
+    with tab_mis_visitas:
+        st.subheader("Resumen de tus Visitas")
+
+        response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).order('fecha').execute()
+        df_mis = pd.DataFrame(response.data)
+        if df_mis.empty:
+            st.info("No tienes visitas de ningún tipo.")
+        else:
+            df_mis['fecha_fmt'] = pd.to_datetime(df_mis['fecha']).dt.strftime('%d/%m/%Y')
+            df_mis['fecha_asignada_fmt'] = pd.to_datetime(df_mis['fecha_asignada']).dt.strftime('%d/%m/%Y')
+            
+            # --- NUEVA SECCIÓN: Tareas asignadas al coordinador ---
+            propias_asignadas = df_mis[df_mis['status'] == 'Asignada a Coordinador']
+            if not propias_asignadas.empty:
+                st.markdown("#### 📋 Mis Visitas Asignadas (Confirmadas)")
+                st.dataframe(propias_asignadas[['fecha_fmt', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones']].rename(columns={
+                    'fecha_fmt': 'Fecha', 'franja_horaria': 'Franja', 'direccion_texto': 'Ubicación', 'equipo': 'Equipo', 'observaciones': 'Obs.'
+                }), use_container_width=True, hide_index=True)
+            else:
+                st.info("Aún no tienes visitas confirmadas asignadas a ti.")
+
+            # --- Visitas asignadas al supervisor ---
+            asignadas_supervisor = df_mis[df_mis['status'] == 'Asignada a Supervisor']
+            if not asignadas_supervisor.empty:
+                st.markdown("####  superviseur ✅ Asignadas a Martín (Supervisor)")
+                st.dataframe(asignadas_supervisor[['fecha_asignada_fmt', 'hora_asignada', 'direccion_texto', 'equipo']].rename(columns={
+                    'fecha_asignada_fmt': 'Fecha Final', 'hora_asignada': 'Hora Final', 'direccion_texto': 'Ubicación', 'equipo': 'Equipo'
+                }), use_container_width=True, hide_index=True)
+            
+            # --- Visitas pendientes y borradores ---
+            pendientes = df_mis[df_mis['status'] == 'Pendiente de Asignación']
+            if not pendientes.empty:
+                st.markdown("#### ⏳ Pendientes de asignar por el supervisor")
+                st.dataframe(pendientes[['fecha_fmt', 'franja_horaria', 'direccion_texto', 'equipo']], use_container_width=True, hide_index=True)
+
+            borradores = df_mis[df_mis['status'] == 'Propuesta']
+            if not borradores.empty:
+                st.markdown("#### ✍️ Tus borradores (no enviados)")
+                st.dataframe(borradores[['fecha_fmt', 'franja_horaria', 'direccion_texto', 'equipo']], use_container_width=True, hide_index=True)
+
 
     with tab_planificar:
         st.subheader("Gestiona tus visitas propuestas (Borradores)")
@@ -40,9 +81,6 @@ def mostrar_planificador():
 
         response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).eq('status', 'Propuesta').gte('fecha', start).lte('fecha', end).execute()
         df = pd.DataFrame(response.data)
-
-        if df.empty:
-            df = pd.DataFrame(columns=['id', 'fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones'])
 
         df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce').dt.date
         df['id'] = pd.to_numeric(df['id'], errors='coerce')
@@ -69,15 +107,9 @@ def mostrar_planificador():
                     if row['fecha'].weekday() == 4 and row['franja_horaria'] not in HORAS_VIERNES: continue
                     lat, lon = geocode_address(row['direccion_texto'])
                     data = {
-                        'usuario_id': st.session_state['usuario_id'],
-                        'fecha': str(row['fecha']),
-                        'franja_horaria': row['franja_horaria'],
-                        'direccion_texto': row['direccion_texto'],
-                        'equipo': row['equipo'],
-                        'observaciones': row['observaciones'],
-                        'status': 'Propuesta',
-                        'lat': lat,
-                        'lon': lon
+                        'usuario_id': st.session_state['usuario_id'], 'fecha': str(row['fecha']), 'franja_horaria': row['franja_horaria'],
+                        'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'], 'observaciones': row['observaciones'],
+                        'status': 'Propuesta', 'lat': lat, 'lon': lon
                     }
                     if pd.notna(row['id']):
                         supabase.table('visitas').update(data).eq('id', int(row['id'])).execute()
@@ -109,55 +141,28 @@ def mostrar_planificador():
             events = []
             for _, r in df_all.iterrows():
                 titulo = f"{r['nombre_completo']} - {r['equipo']}"
-                color = "black" if r['status'] == 'Asignada a Supervisor' else ("orange" if r['status'] == 'Pendiente de Asignación' else "gray")
+                # --- LÓGICA DE COLORES MEJORADA ---
+                status_colors = {
+                    'Asignada a Supervisor': 'black',
+                    'Asignada a Coordinador': 'blue',
+                    'Pendiente de Asignación': 'orange',
+                    'Propuesta': 'gray'
+                }
+                color = status_colors.get(r['status'], 'gray')
+
                 if pd.notna(r.get('fecha_asignada')) and pd.notna(r.get('hora_asignada')):
                     start = datetime.combine(pd.to_datetime(r['fecha_asignada']).date(), datetime.strptime(r['hora_asignada'], '%H:%M').time())
-                    end = start + timedelta(hours=1)
+                    end = start + timedelta(minutes=45)
                 else:
                     horas = re.findall(r'(\d{2}:\d{2})', r['franja_horaria'] or '')
                     if len(horas) != 2: continue
                     start = datetime.combine(r['fecha'], datetime.strptime(horas[0], '%H:%M').time())
                     end = datetime.combine(r['fecha'], datetime.strptime(horas[1], '%H:%M').time())
-                events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color})
+                
+                events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color, "extendedProps": {"status": r['status']}})
 
             calendar(events=events, options={
                 "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"},
-                "initialView": "timeGridWeek",
-                "locale": "es",
-                "initialDate": start_cal.isoformat(),
-                "slotMinTime": "08:00:00",
-                "slotMaxTime": "18:00:00"
+                "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat(),
+                "slotMinTime": "08:00:00", "slotMaxTime": "18:00:00"
             }, key=f"cal_{start_cal}")
-
-    with tab_mis_visitas:
-        st.subheader("Mis Visitas")
-
-        response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).order('fecha').execute()
-        df_mis = pd.DataFrame(response.data)
-        if df_mis.empty:
-            st.info("No tienes visitas.")
-        else:
-            df_mis['fecha'] = pd.to_datetime(df_mis['fecha']).dt.strftime('%d/%m/%Y')
-
-            asignadas = df_mis[df_mis['status'] == 'Asignada a Supervisor']
-            if not asignadas.empty:
-                st.markdown("#### ✅ Asignadas a Martín (Supervisor)")
-                st.dataframe(asignadas[['fecha_asignada', 'hora_asignada', 'direccion_texto', 'equipo', 'observaciones']].rename(columns={
-                    'fecha_asignada': 'Fecha Final', 'hora_asignada': 'Hora Final'
-                }), use_container_width=True, hide_index=True)
-            else:
-                st.info("Ninguna visita asignada a Martín.")
-
-            pendientes = df_mis[df_mis['status'] == 'Pendiente de Asignación']
-            if not pendientes.empty:
-                st.markdown("#### ⏳ Pendientes de asignar")
-                st.dataframe(pendientes[['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones']], use_container_width=True, hide_index=True)
-            else:
-                st.info("No tienes visitas pendientes de asignar.")
-
-            borradores = df_mis[df_mis['status'] == 'Propuesta']
-            if not borradores.empty:
-                st.markdown("#### ✍️ Tus borradores")
-                st.dataframe(borradores[['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones']], use_container_width=True, hide_index=True)
-            else:
-                st.info("No tienes borradores.")
