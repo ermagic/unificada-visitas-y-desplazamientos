@@ -38,8 +38,15 @@ def cargar_datos_supabase():
         df_clean = df[required_cols].dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
+        
+        # --- LÍNEA CORREGIDA PARA LOS KM ---
+        # Aseguramos que la columna 'distancia' se trate como texto para reemplazar comas
+        # y luego se convierta a número de forma segura.
+        df_clean['distancia'] = df_clean['distancia'].astype(str).str.replace(',', '.', regex=False)
+        
         for col in ['distancia', 'minutos_total', 'minutos_cargo']:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
+            
         df_clean['minutos_total'] = df_clean['minutos_total'].astype(int)
         df_clean['minutos_cargo'] = df_clean['minutos_cargo'].astype(int)
         return df_clean
@@ -55,6 +62,7 @@ def cargar_datos_empleados():
         df = pd.DataFrame(response.data)
         if df.empty:
             st.error("Error: La tabla 'empleados' en Supabase está vacía o no se pudo cargar.")
+            st.info("💡 Posible solución: Verifica que la 'Row Level Security (RLS)' esté desactivada para esta tabla en el panel de Supabase.")
             return None
         required_cols = ['PROVINCIA', 'EQUIPO', 'NOMBRE COMPLETO', 'EMAIL', 'PERSONAL']
         if not all(col in df.columns for col in required_cols):
@@ -87,7 +95,7 @@ def calcular_minutos_con_limite(origen, destino, gmaps_client):
 
 def mostrar_horas_de_salida(total_minutos_desplazamiento):
     """
-    Función MODIFICADA para quitar 'Verano' y añadir nota en viernes.
+    Función MODIFICADA para la lógica de los viernes.
     """
     st.markdown("---"); st.subheader("🕒 Horas de Salida Sugeridas")
     dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
@@ -98,11 +106,18 @@ def mostrar_horas_de_salida(total_minutos_desplazamiento):
     st.session_state.calculation_results['fecha'] = fecha_formateada
     es_viernes = (hoy.weekday() == 4)
     
-    # Horarios base SIN 'Verano'
-    horarios_base = {
-        "Habitual Intensivo": (dt.time(15, 0) if es_viernes else dt.time(16, 0)),
-        "Normal": (dt.time(16, 0) if es_viernes else dt.time(17, 0))
-    }
+    # --- LÓGICA CORREGIDA PARA VIERNES ---
+    if es_viernes:
+        # Los viernes, ambos horarios salen a las 15:00
+        horarios_base = {
+            "Habitual Intensivo": dt.time(15, 0),
+            "Normal": dt.time(15, 0)
+        }
+    else:
+        horarios_base = {
+            "Habitual Intensivo": dt.time(16, 0),
+            "Normal": dt.time(17, 0)
+        }
     
     tabla_rows = [f"| Horario | Hora Salida Habitual | Hora Salida Hoy ({fecha_formateada}) |", "|---|---|---|"]
     horas_salida_hoy = {}
@@ -111,14 +126,11 @@ def mostrar_horas_de_salida(total_minutos_desplazamiento):
         salida_dt_hoy = dt.datetime.combine(hoy, hora_habitual) - dt.timedelta(minutes=total_minutos_desplazamiento)
         hora_salida_str = salida_dt_hoy.strftime('%H:%M')
         horas_salida_hoy[nombre] = hora_salida_str
-        
-        # Añadimos la nota si es viernes
-        nota_viernes = " (1h menos)" if es_viernes else ""
-        
-        tabla_rows.append(f"| **{nombre}** | {hora_habitual.strftime('%H:%M')}{nota_viernes} | **{hora_salida_str}** |")
+        tabla_rows.append(f"| **{nombre}** | {hora_habitual.strftime('%H:%M')} | **{hora_salida_str}** |")
         
     st.session_state.calculation_results['horas_salida'] = horas_salida_hoy
     st.markdown("\n".join(tabla_rows))
+
 
 def send_email(recipients, subject, body):
     try:
@@ -181,9 +193,9 @@ def pagina_calculadora():
                     st.markdown("---")
                     col_res1, col_res2 = st.columns(2)
                     with col_res1:
-                        st.subheader("Viaje de Ida"); st.markdown(f"**{st.session_state.calculation_results['trayecto_entrada']}**"); st.metric("Distancia", f"{dist_entrada} km"); st.metric("Tiempo de viaje", f"{min_total_entrada} min"); st.metric("A cargo de empresa", f"{min_cargo_entrada} min")
+                        st.subheader("Viaje de Ida"); st.markdown(f"**{st.session_state.calculation_results['trayecto_entrada']}**"); st.metric("Distancia", f"{dist_entrada:.2f} km"); st.metric("Tiempo de viaje", f"{min_total_entrada} min"); st.metric("A cargo de empresa", f"{min_cargo_entrada} min")
                     with col_res2:
-                        st.subheader("Viaje de Vuelta"); st.markdown(f"**{st.session_state.calculation_results['trayecto_salida']}**"); st.metric("Distancia", f"{dist_salida} km"); st.metric("Tiempo de viaje", f"{min_total_salida} min"); st.metric("A cargo de empresa", f"{min_cargo_salida} min")
+                        st.subheader("Viaje de Vuelta"); st.markdown(f"**{st.session_state.calculation_results['trayecto_salida']}**"); st.metric("Distancia", f"{dist_salida:.2f} km"); st.metric("Tiempo de viaje", f"{min_total_salida} min"); st.metric("A cargo de empresa", f"{min_cargo_salida} min")
                     st.markdown("---")
                     total_minutos_a_cargo = min_cargo_entrada + min_cargo_salida
                     st.success(f"**Tiempo total a restar de la jornada:** {total_minutos_a_cargo} minutos")
