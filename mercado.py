@@ -5,10 +5,6 @@ from database import supabase
 from datetime import date, timedelta
 
 def mostrar_mercado():
-    """
-    Muestra la página del Mercado de Visitas, donde los coordinadores
-    pueden intercambiar visitas.
-    """
     st.header("🔄 Mercado de Visitas")
     st.info("Aquí puedes ver las visitas que tus compañeros han ofrecido. Si una te encaja en la ruta, ¡reclámala!")
 
@@ -17,7 +13,6 @@ def mostrar_mercado():
     end_of_next_week = start_of_next_week + timedelta(days=6)
 
     try:
-        # Cargar las visitas que están en el mercado para la próxima semana
         response = supabase.table('visitas').select(
             '*, ofertante:usuario_id(nombre_completo, id)'
         ).eq(
@@ -27,7 +22,6 @@ def mostrar_mercado():
         ).lte(
             'fecha', end_of_next_week.isoformat()
         ).execute()
-
         visitas_en_mercado = response.data
     except Exception as e:
         st.error(f"No se pudo cargar el mercado de visitas: {e}")
@@ -41,7 +35,6 @@ def mostrar_mercado():
     st.subheader("Visitas Disponibles para Intercambio")
 
     for visita in visitas_en_mercado:
-        # No mostrar las visitas ofrecidas por uno mismo
         if visita['usuario_id'] == st.session_state['usuario_id']:
             continue
 
@@ -63,11 +56,9 @@ def mostrar_mercado():
                         st.error("No se pudo identificar al ofertante. No se puede reclamar.")
                         continue
                     try:
-                        # 1. Reasignar la visita
                         update_data = {'usuario_id': st.session_state['usuario_id'], 'en_mercado': False}
                         supabase.table('visitas').update(update_data).eq('id', visita['id']).execute()
                         
-                        # 2. Registrar la ayuda en la nueva tabla
                         ayuda_data = {
                             'reclamador_id': st.session_state['usuario_id'],
                             'ofertante_id': ofertante_id,

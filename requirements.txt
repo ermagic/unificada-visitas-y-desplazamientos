@@ -9,3 +9,4 @@ holidays
 bcrypt
 supabase
 plotly
+python-dateutil
