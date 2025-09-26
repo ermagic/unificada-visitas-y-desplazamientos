@@ -19,67 +19,53 @@ def inicializar_estado_calculadora():
 # --- FUNCIONES DE LÓGICA ---
 @st.cache_data
 def cargar_datos_supabase():
-    """
-    Carga los datos directamente desde la tabla 'tiempos' de Supabase.
-    """
+    """Carga los datos de tiempos desde la tabla 'tiempos' de Supabase."""
     try:
-        # Consulta a Supabase SIN límite para obtener todos los registros
         response = supabase.table('tiempos').select('*').execute()
         df = pd.DataFrame(response.data)
-
         if df.empty:
             st.error("Error: La tabla 'tiempos' de Supabase no devolvió datos.")
             return None
-
-        # Renombramos las columnas de Supabase a los nombres usados en la app
         df.rename(columns={
-            'Poblacion_WFI': 'poblacion', 
-            'Centro de Trabajo Nuevo': 'centro_trabajo',
-            'Provincia Centro de Trabajo': 'provincia_ct', 
-            'Distancia en Kms': 'distancia',
-            'Tiempo(Min)': 'minutos_total', 
-            'Tiempo a cargo de empresa(Min)': 'minutos_cargo'
+            'Poblacion_WFI': 'poblacion', 'Centro de Trabajo Nuevo': 'centro_trabajo',
+            'Provincia Centro de Trabajo': 'provincia_ct', 'Distancia en Kms': 'distancia',
+            'Tiempo(Min)': 'minutos_total', 'Tiempo a cargo de empresa(Min)': 'minutos_cargo'
         }, inplace=True)
-
         required_cols = ['poblacion', 'centro_trabajo', 'provincia_ct', 'distancia', 'minutos_total', 'minutos_cargo']
         if not all(col in df.columns for col in required_cols):
             st.error("Error Crítico: La tabla de Supabase no contiene todas las columnas necesarias.")
             return None
-        
-        # Limpieza de datos
         df_clean = df[required_cols].dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
-        
         for col in ['distancia', 'minutos_total', 'minutos_cargo']:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
-        
         df_clean['minutos_total'] = df_clean['minutos_total'].astype(int)
         df_clean['minutos_cargo'] = df_clean['minutos_cargo'].astype(int)
-        
         return df_clean
-
     except Exception as e:
         st.error(f"Error al conectar o procesar datos de Supabase: {e}")
         return None
 
 @st.cache_data
-def cargar_datos_empleados(filename="employees.csv"):
+def cargar_datos_empleados():
+    """Carga los datos desde la tabla 'empleados' de Supabase."""
     try:
-        df = pd.read_csv(filename, delimiter='|', encoding='latin-1')
+        response = supabase.table('empleados').select('*').execute()
+        df = pd.DataFrame(response.data)
+        if df.empty:
+            st.error("Error: La tabla 'empleados' en Supabase está vacía o no se pudo cargar.")
+            return None
         required_cols = ['PROVINCIA', 'EQUIPO', 'NOMBRE COMPLETO', 'EMAIL', 'PERSONAL']
         if not all(col in df.columns for col in required_cols):
             missing_cols = [col for col in required_cols if col not in df.columns]
-            st.error(f"❌ Error en '{filename}': Faltan columnas: {missing_cols}")
+            st.error(f"❌ Error en la tabla 'empleados' de Supabase: Faltan columnas: {missing_cols}")
             return None
-        df = df.dropna(subset=required_cols)
-        for col in required_cols:
-            if isinstance(df[col].iloc[0], str):
-                df[col] = df[col].str.strip()
         df_activos = df[df['PERSONAL'].str.lower() == 'activo'].copy()
         return df_activos
-    except FileNotFoundError: st.error(f"❌ Error: No se encuentra el archivo '{filename}'."); return None
-    except Exception as e: st.error(f"Error al procesar '{filename}'. Error: {e}"); return None
+    except Exception as e: 
+        st.error(f"Error al cargar los empleados desde Supabase. Error: {e}"); 
+        return None
 
 def calcular_minutos_con_limite(origen, destino, gmaps_client):
     try:
@@ -88,8 +74,7 @@ def calcular_minutos_con_limite(origen, destino, gmaps_client):
         steps = directions_result[0]['legs'][0]['steps']
         total_capped_duration_seconds, total_distance_meters = 0, 0
         for step in steps:
-            distancia_metros = step['distance']['value']
-            duracion_google_seg = step['duration']['value']
+            distancia_metros, duracion_google_seg = step['distance']['value'], step['duration']['value']
             total_distance_meters += distancia_metros
             theoretical_duration_90kmh_seg = (distancia_metros / 1000) / (90 / 3600) if distancia_metros > 0 else 0
             capped_duration_seg = max(duracion_google_seg, theoretical_duration_90kmh_seg)
@@ -101,6 +86,9 @@ def calcular_minutos_con_limite(origen, destino, gmaps_client):
     except Exception as e: return None, None, f"Error inesperado: {e}"
 
 def mostrar_horas_de_salida(total_minutos_desplazamiento):
+    """
+    Función MODIFICADA para quitar 'Verano' y añadir nota en viernes.
+    """
     st.markdown("---"); st.subheader("🕒 Horas de Salida Sugeridas")
     dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
     meses_es = {"January": "enero", "February": "febrero", "March": "marzo", "April": "abril", "May": "mayo", "June": "junio", "July": "julio", "August": "agosto", "September": "septiembre", "October": "octubre", "November": "noviembre", "December": "diciembre"}
@@ -109,14 +97,26 @@ def mostrar_horas_de_salida(total_minutos_desplazamiento):
     fecha_formateada = f"{dias_es.get(dia_en, dia_en)} {hoy.day} de {meses_es.get(mes_en, mes_en)}"
     st.session_state.calculation_results['fecha'] = fecha_formateada
     es_viernes = (hoy.weekday() == 4)
-    horarios_base = {"Verano": (dt.time(14, 0) if es_viernes else dt.time(15, 0)), "Habitual Intensivo": (dt.time(15, 0) if es_viernes else dt.time(16, 0)), "Normal": (dt.time(16, 0) if es_viernes else dt.time(17, 0))}
+    
+    # Horarios base SIN 'Verano'
+    horarios_base = {
+        "Habitual Intensivo": (dt.time(15, 0) if es_viernes else dt.time(16, 0)),
+        "Normal": (dt.time(16, 0) if es_viernes else dt.time(17, 0))
+    }
+    
     tabla_rows = [f"| Horario | Hora Salida Habitual | Hora Salida Hoy ({fecha_formateada}) |", "|---|---|---|"]
     horas_salida_hoy = {}
+    
     for nombre, hora_habitual in horarios_base.items():
         salida_dt_hoy = dt.datetime.combine(hoy, hora_habitual) - dt.timedelta(minutes=total_minutos_desplazamiento)
         hora_salida_str = salida_dt_hoy.strftime('%H:%M')
         horas_salida_hoy[nombre] = hora_salida_str
-        tabla_rows.append(f"| **{nombre}** | {hora_habitual.strftime('%H:%M')} | **{hora_salida_str}** |")
+        
+        # Añadimos la nota si es viernes
+        nota_viernes = " (1h menos)" if es_viernes else ""
+        
+        tabla_rows.append(f"| **{nombre}** | {hora_habitual.strftime('%H:%M')}{nota_viernes} | **{hora_salida_str}** |")
+        
     st.session_state.calculation_results['horas_salida'] = horas_salida_hoy
     st.markdown("\n".join(tabla_rows))
 
@@ -133,15 +133,13 @@ def send_email(recipients, subject, body):
         return True
     except Exception as e: 
         st.error(f"Error al enviar el correo: {e}")
-        st.info("Revisa la configuración en .streamlit/secrets.toml y que la contraseña de aplicación sea correcta.")
+        st.info("Revisa la configuración en .streamlit/secrets.toml.")
         return False
 
 # --- PÁGINA DE LA CALCULADORA ---
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
-    
     df_tiempos = cargar_datos_supabase()
-
     def _cargo(minutos): return max(0, int(minutos) - 30)
 
     tab1, tab2 = st.tabs(["Cálculo oficial (desde Base de Datos)", "Cálculo informativo (con Google Maps)"])
@@ -150,19 +148,19 @@ def pagina_calculadora():
         st.subheader("Cálculo de tiempos desde la base de datos oficial")
         if df_tiempos is not None:
             provincias_ct = sorted(df_tiempos['provincia_ct'].unique())
-            provincia_seleccionada = st.selectbox("1. Selecciona la provincia del Centro de Trabajo:",provincias_ct, index=None, placeholder="Elige una provincia")
+            provincia_seleccionada = st.selectbox("1. Provincia del Centro de Trabajo:",provincias_ct, index=None, placeholder="Elige una provincia")
             if provincia_seleccionada:
                 df_filtrado = df_tiempos[df_tiempos['provincia_ct'] == provincia_seleccionada]
                 lista_poblaciones = sorted(df_filtrado['poblacion'].unique())
                 st.markdown("---")
                 col1, col2 = st.columns(2)
                 with col1:
-                    mun_entrada = st.selectbox("2. Destino del comienzo de la jornada:", lista_poblaciones, index=None, placeholder="Selecciona una población")
+                    mun_entrada = st.selectbox("2. Destino al inicio de jornada:", lista_poblaciones, index=None, placeholder="Selecciona población")
                     if mun_entrada:
                         info_entrada = df_filtrado[df_filtrado['poblacion'] == mun_entrada].iloc[0]
                         st.info(f"**Centro de Trabajo:** {info_entrada['centro_trabajo']}")
                 with col2:
-                    mun_salida = st.selectbox("3. Destino del final de la jornada:", lista_poblaciones, index=None, placeholder="Selecciona una población")
+                    mun_salida = st.selectbox("3. Destino al final de jornada:", lista_poblaciones, index=None, placeholder="Selecciona población")
                     if mun_salida:
                         info_salida = df_filtrado[df_filtrado['poblacion'] == mun_salida].iloc[0]
                         st.info(f"**Centro de Trabajo:** {info_salida['centro_trabajo']}")
@@ -177,35 +175,33 @@ def pagina_calculadora():
                         'aviso_jornada': min_total_entrada > 60 or min_total_salida > 60, 'trayecto_entrada': f"De `{datos_entrada['centro_trabajo']}` a `{mun_entrada}`",
                         'trayecto_salida': f"De `{mun_salida}` a `{datos_salida['centro_trabajo']}`"
                     })
-                    if st.session_state.calculation_results['aviso_pernocta']: st.warning("🛌 **Aviso Pernocta:** Uno o ambos trayectos superan los 80 minutos.")
-                    if st.session_state.calculation_results['aviso_dieta']: st.warning("⚠️ **Atención Media Dieta:** Uno o ambos trayectos superan los 40km.")
-                    if st.session_state.calculation_results['aviso_jornada']: st.warning("⏰ **Aviso Jornada:** Uno o ambos trayectos superan los 60 minutos.")
+                    if st.session_state.calculation_results['aviso_pernocta']: st.warning("🛌 **Aviso Pernocta:** Trayecto supera 80 min.")
+                    if st.session_state.calculation_results['aviso_dieta']: st.warning("⚠️ **Atención Media Dieta:** Trayecto supera 40km.")
+                    if st.session_state.calculation_results['aviso_jornada']: st.warning("⏰ **Aviso Jornada:** Trayecto supera 60 min.")
                     st.markdown("---")
                     col_res1, col_res2 = st.columns(2)
                     with col_res1:
-                        st.subheader("Viaje de Ida"); st.markdown(f"**{st.session_state.calculation_results['trayecto_entrada']}**"); st.metric("Distancia", f"{dist_entrada} km"); st.metric("Tiempo de viaje", f"{min_total_entrada} min"); st.metric("A cargo de la empresa", f"{min_cargo_entrada} min")
+                        st.subheader("Viaje de Ida"); st.markdown(f"**{st.session_state.calculation_results['trayecto_entrada']}**"); st.metric("Distancia", f"{dist_entrada} km"); st.metric("Tiempo de viaje", f"{min_total_entrada} min"); st.metric("A cargo de empresa", f"{min_cargo_entrada} min")
                     with col_res2:
-                        st.subheader("Viaje de Vuelta"); st.markdown(f"**{st.session_state.calculation_results['trayecto_salida']}**"); st.metric("Distancia", f"{dist_salida} km"); st.metric("Tiempo de viaje", f"{min_total_salida} min"); st.metric("A cargo de la empresa", f"{min_cargo_salida} min")
+                        st.subheader("Viaje de Vuelta"); st.markdown(f"**{st.session_state.calculation_results['trayecto_salida']}**"); st.metric("Distancia", f"{dist_salida} km"); st.metric("Tiempo de viaje", f"{min_total_salida} min"); st.metric("A cargo de empresa", f"{min_cargo_salida} min")
                     st.markdown("---")
                     total_minutos_a_cargo = min_cargo_entrada + min_cargo_salida
                     st.success(f"**Tiempo total a restar de la jornada:** {total_minutos_a_cargo} minutos")
                     mostrar_horas_de_salida(total_minutos_a_cargo)
                     st.session_state.calculation_results['total_minutos'] = total_minutos_a_cargo
                     if st.button("📧 Enviar mail al equipo", key="btn_csv_mail"): st.session_state.calc_page = 'email_form'; st.rerun()
-        else:
-            st.warning("No se pudieron cargar los datos desde la base de datos. La calculadora no puede funcionar.")
+        else: st.warning("No se pudieron cargar los datos. La calculadora no puede funcionar.")
 
     with tab2:
         st.subheader("Cálculo por distancia (Reglas ponderadas)")
         try:
             gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
         except Exception:
-            st.error("Error: La clave de API de Google no está disponible en los secretos.")
-            st.stop()
+            st.error("Error: La clave de API de Google no está disponible."); st.stop()
         
         centros_map, lista_provincias_ct = {}, ["(Escribir dirección manual)"]
         if df_tiempos is not None:
-            centros_df = df_tiempos[['provincia_ct', 'centro_trabajo']].drop_duplicates(subset=['provincia_ct'])
+            centros_df = df_tiempos[['provincia_ct', 'centro_trabajo']].drop_duplicates()
             centros_map = pd.Series(centros_df.centro_trabajo.values, index=centros_df.provincia_ct).to_dict()
             lista_provincias_ct.extend(sorted(centros_map.keys()))
 
@@ -219,12 +215,12 @@ def pagina_calculadora():
 
         col1_g, col2_g = st.columns(2)
         with col1_g:
-            st.selectbox("Ayuda: Seleccionar centro (Origen ida)", lista_provincias_ct, key='origen_ida_select', on_change=update_field_from_select, args=('origen_ida', 'origen_ida_select'))
+            st.selectbox("Ayuda centro (Origen ida)", lista_provincias_ct, key='origen_ida_select', on_change=update_field_from_select, args=('origen_ida', 'origen_ida_select'))
             origen_ida = st.text_input("Origen (ida)", key="origen_ida", on_change=lambda: st.session_state.update(gmaps_results=None))
             destino_ida = st.text_input("Destino (ida)", key="destino_ida", on_change=lambda: st.session_state.update(gmaps_results=None))
         with col2_g:
             origen_vuelta = st.text_input("Origen (vuelta)", key="origen_vuelta", on_change=lambda: st.session_state.update(gmaps_results=None))
-            st.selectbox("Ayuda: Seleccionar centro (Destino vuelta)", lista_provincias_ct, key='destino_vuelta_select', on_change=update_field_from_select, args=('destino_vuelta', 'destino_vuelta_select'))
+            st.selectbox("Ayuda centro (Destino vuelta)", lista_provincias_ct, key='destino_vuelta_select', on_change=update_field_from_select, args=('destino_vuelta', 'destino_vuelta_select'))
             destino_vuelta = st.text_input("Destino (vuelta)", key="destino_vuelta", on_change=lambda: st.session_state.update(gmaps_results=None))
         
         if st.button("Calcular Tiempo por Distancia", type="primary"):
@@ -238,9 +234,7 @@ def pagina_calculadora():
                         st.session_state.gmaps_results = None
                     else:
                         st.session_state.gmaps_results = {"dist_ida": dist_ida, "min_ida": min_ida, "dist_vuelta": dist_vuelta, "min_vuelta": min_vuelta}
-                        st.session_state.calculation_results.update({
-                            'trayecto_entrada': f"De `{origen_ida}` a `{destino_ida}`", 'trayecto_salida': f"De `{origen_vuelta}` a `{destino_vuelta}`"
-                        })
+                        st.session_state.calculation_results.update({'trayecto_entrada': f"De `{origen_ida}` a `{destino_ida}`", 'trayecto_salida': f"De `{origen_vuelta}` a `{destino_vuelta}`"})
             else: st.warning("Por favor, rellene las cuatro direcciones."); st.session_state.gmaps_results = None
         
         if st.session_state.gmaps_results:
@@ -249,34 +243,31 @@ def pagina_calculadora():
             if es_identico:
                 dist, mins = (res['dist_ida'], res['min_ida']) if res['min_ida'] >= res['min_vuelta'] else (res['dist_vuelta'], res['min_vuelta'])
                 st.session_state.calculation_results.update({'aviso_pernocta': mins > 80, 'aviso_dieta': dist > 40, 'aviso_jornada': mins > 60})
-                if st.session_state.calculation_results['aviso_pernocta']: st.warning(f"🛌 **Aviso Pernocta:** El trayecto ({mins} min) supera los 80 minutos.")
-                if st.session_state.calculation_results['aviso_dieta']: st.warning(f"⚠️ **Atención Media Dieta:** El trayecto ({dist:.1f} km) supera los 40km.")
-                if st.session_state.calculation_results['aviso_jornada']: st.warning(f"⏰ **Aviso Jornada:** El trayecto ({mins} min) supera los 60 minutos.")
+                if st.session_state.calculation_results['aviso_pernocta']: st.warning(f"🛌 **Aviso Pernocta:** Trayecto ({mins} min) supera 80 min.")
+                if st.session_state.calculation_results['aviso_dieta']: st.warning(f"⚠️ **Atención Media Dieta:** Trayecto ({dist:.1f} km) supera 40km.")
+                if st.session_state.calculation_results['aviso_jornada']: st.warning(f"⏰ **Aviso Jornada:** Trayecto ({mins} min) supera 60 min.")
                 st.metric(f"TRAYECTO MÁS LARGO ({dist:.1f} km)", f"{_cargo(mins)} min a cargo", f"Tiempo total: {mins} min", delta_color="off")
                 total_final = _cargo(mins) * 2
             else:
                 st.session_state.calculation_results.update({'aviso_pernocta': res['min_ida'] > 80 or res['min_vuelta'] > 80, 'aviso_dieta': res['dist_ida'] > 40 or res['dist_vuelta'] > 40, 'aviso_jornada': res['min_ida'] > 60 or res['min_vuelta'] > 60})
-                if st.session_state.calculation_results['aviso_pernocta']: st.warning("🛌 **Aviso Pernocta:** Uno o ambos trayectos superan los 80 minutos.")
-                if st.session_state.calculation_results['aviso_dieta']: st.warning("⚠️ **Atención Media Dieta:** Uno o ambos trayectos superan los 40km.")
-                if st.session_state.calculation_results['aviso_jornada']: st.warning("⏰ **Aviso Jornada:** Uno o ambos trayectos superan los 60 minutos.")
+                if st.session_state.calculation_results['aviso_pernocta']: st.warning("🛌 **Aviso Pernocta:** Trayecto supera 80 min.")
+                if st.session_state.calculation_results['aviso_dieta']: st.warning("⚠️ **Atención Media Dieta:** Trayecto supera 40km.")
+                if st.session_state.calculation_results['aviso_jornada']: st.warning("⏰ **Aviso Jornada:** Trayecto supera 60 min.")
                 st.metric(f"IDA: {res['dist_ida']:.1f} km", f"{_cargo(res['min_ida'])} min a cargo", f"Tiempo total: {res['min_ida']} min", delta_color="off")
                 st.metric(f"VUELTA: {res['dist_vuelta']:.1f} km", f"{_cargo(res['min_vuelta'])} min a cargo", f"Tiempo total: {res['min_vuelta']} min", delta_color="off")
                 total_final = _cargo(res['min_ida']) + _cargo(res['min_vuelta'])
-            st.markdown("---")
-            st.success(f"**Tiempo total a restar de la jornada:** {total_final} minutos")
-            mostrar_horas_de_salida(total_final)
+            st.markdown("---"); st.success(f"**Tiempo total a restar de la jornada:** {total_final} minutos"); mostrar_horas_de_salida(total_final)
             st.session_state.calculation_results['total_minutos'] = total_final
             if st.button("📧 Enviar mail al equipo", key="btn_gmaps_mail"): st.session_state.calc_page = 'email_form'; st.rerun()
 
 # --- PÁGINA DE EMAIL ---
 def pagina_email():
     st.header("📧 Redactar y Enviar Notificación")
-    if st.button("⬅️ Volver a la calculadora"): 
-        st.session_state.calc_page = 'calculator'
-        st.rerun()
+    if st.button("⬅️ Volver a la calculadora"): st.session_state.calc_page = 'calculator'; st.rerun()
     st.markdown("---")
     employees_df = cargar_datos_empleados()
-    if employees_df is None: return
+    if employees_df is None: st.warning("No se pudieron cargar datos de empleados."); return
+        
     st.subheader("1. Filtrar y Seleccionar Destinatarios")
     col1, col2 = st.columns(2)
     with col1: provincia_sel = st.selectbox("Filtrar por Provincia:", employees_df['PROVINCIA'].unique())
@@ -303,7 +294,7 @@ def pagina_email():
     asunto_pred, cuerpo_pred = "", ""
     if tipo_mail == "Comunicar Horario de Salida":
         asunto_pred = f"Horario de salida para el {res.get('fecha', 'día de hoy')}"
-        cuerpo_pred = f"{saludo}\n\nTe informo del horario de salida calculado para hoy, {res.get('fecha', '')}, será **{res.get('total_minutos', 0)} minutos** antes:\n\n- Salida en horario de Verano: **{res.get('horas_salida', {}).get('Verano', 'N/A')}**\n- Salida en horario Intensivo: **{res.get('horas_salida', {}).get('Habitual Intensivo', 'N/A')}**\n- Salida en horario Normal: **{res.get('horas_salida', {}).get('Normal', 'N/A')}**\n\nTrayectos considerados:\n- Ida: {res.get('trayecto_entrada', 'No especificado')}\n- Vuelta: {res.get('trayecto_salida', 'No especificado')}\n\nSaludos,\n{st.session_state['nombre_completo']}"
+        cuerpo_pred = f"{saludo}\n\nTe informo del horario de salida calculado para hoy, {res.get('fecha', '')}, será **{res.get('total_minutos', 0)} minutos** antes:\n\n- Salida en horario Intensivo: **{res.get('horas_salida', {}).get('Habitual Intensivo', 'N/A')}**\n- Salida en horario Normal: **{res.get('horas_salida', {}).get('Normal', 'N/A')}**\n\nTrayectos considerados:\n- Ida: {res.get('trayecto_entrada', 'No especificado')}\n- Vuelta: {res.get('trayecto_salida', 'No especificado')}\n\nSaludos,\n{st.session_state['nombre_completo']}"
     elif tipo_mail == "Notificar Tipo de Jornada":
         asunto_pred = f"Confirmación de jornada para el {res.get('fecha', 'día de hoy')}"
         cuerpo_pred = f"{saludo}\n\nDebido a los desplazamientos del día de hoy ({res.get('fecha', '')}), por favor, confirma el tipo de jornada a aplicar.\n\nRecuerda que los avisos generados han sido:\n- Media Dieta (>40km): **{'Sí' if res.get('aviso_dieta') else 'No'}**\n- Jornada Especial (>60min): **{'Sí' if res.get('aviso_jornada') else 'No'}**\n\nQuedo a la espera de tu confirmación.\n\nSaludos,\n{st.session_state['nombre_completo']}"
@@ -322,7 +313,6 @@ def pagina_email():
 def mostrar_calculadora_avanzada():
     """Esta es la función que se llamará desde la app principal."""
     inicializar_estado_calculadora()
-    
     if st.session_state.calc_page == 'calculator':
         pagina_calculadora()
     elif st.session_state.calc_page == 'email_form':
