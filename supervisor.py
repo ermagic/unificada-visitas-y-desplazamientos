@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con lógica de tiempo corregida y mejoras visuales)
+# Fichero: supervisor.py (Versión con mapa de itinerario restaurado)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -15,6 +15,7 @@ from database import supabase
 # --- CONSTANTES ---
 PUNTO_INICIO_MARTIN = "Plaça de Catalunya, Barcelona, España"
 DURACION_VISITA_SEGUNDOS = 45 * 60
+CATALONIA_CENTER = [41.8795, 1.7887]
 
 # --- FUNCIONES AUXILIARES ---
 def send_email(recipients, subject, body):
@@ -32,8 +33,6 @@ def send_email(recipients, subject, body):
         return False
 
 def get_daily_time_budget(weekday):
-    # Devuelve 9 horas (L-J) o 7 horas (V) en segundos
-    # Jornada de 8 a 17h = 9h / Jornada de 8 a 15h = 7h
     return 7 * 3600 if weekday == 4 else 9 * 3600
 
 # --- LÓGICA DEL ALGORITMO ---
@@ -43,21 +42,13 @@ def generar_planificacion_automatica(dias_seleccionados):
     end_of_next_week = start_of_next_week + timedelta(days=4)
 
     st.info(f"Buscando todas las visitas propuestas para la semana del {start_of_next_week.strftime('%d/%m/%Y')}.")
-    
-    response = supabase.table('visitas').select('*, usuarios(nombre_completo)').neq(
-        'status', 'Realizada'
-    ).gte(
-        'fecha', start_of_next_week
-    ).lte(
-        'fecha', end_of_next_week
-    ).execute()
-    
+    response = supabase.table('visitas').select('*, usuarios(nombre_completo)').neq('status', 'Realizada').gte('fecha', start_of_next_week).lte('fecha', end_of_next_week).execute()
     visitas_df = pd.DataFrame(response.data)
 
     if visitas_df.empty:
         st.warning("No hay visitas disponibles para planificar."); return None, None
 
-    visitas_df['nombre_coordinador'] = visitas_df['usuarios'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'N/A')
+    visitas_df['nombre_coordinador'] = visitas_df['usuarios'].apply(lambda x: x.get('nombre_completo') if isinstance(x, dict) else 'N/A')
     todas_las_visitas = visitas_df.to_dict('records')
 
     visitas_obligatorias = [v for v in todas_las_visitas if v.get('ayuda_solicitada')]
@@ -72,21 +63,18 @@ def generar_planificacion_automatica(dias_seleccionados):
     
     for dia_laboral in dias_seleccionados:
         presupuesto_tiempo_dia = get_daily_time_budget(dia_laboral.weekday())
-        
         obligatorias_restantes = [v for v in visitas_obligatorias if v['id'] not in visitas_ya_planificadas_ids]
         opcionales_restantes = [v for v in visitas_opcionales if v['id'] not in visitas_ya_planificadas_ids]
         visitas_disponibles_hoy = obligatorias_restantes + opcionales_restantes
         
         if not visitas_disponibles_hoy: continue
 
-        mejor_ruta_del_dia = []
-        mejor_puntuacion = (-1, -1, float('-inf'))
+        mejor_ruta_del_dia, mejor_puntuacion = [], (-1, -1, float('-inf'))
         
         for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
             for combo in itertools.combinations(visitas_disponibles_hoy, cantidad):
                 for orden in itertools.permutations(combo):
                     tiempo_de_trabajo = len(orden) * DURACION_VISITA_SEGUNDOS
-                    
                     if len(orden) > 1:
                         direcciones_ruta = [v['direccion_texto'] for v in orden]
                         matrix = gmaps.distance_matrix(direcciones_ruta, direcciones_ruta, mode="driving")
@@ -98,8 +86,7 @@ def generar_planificacion_automatica(dias_seleccionados):
                         puntuacion_actual = (num_obligatorias, len(combo), -tiempo_de_trabajo)
                         
                         if puntuacion_actual > mejor_puntuacion:
-                            mejor_puntuacion = puntuacion_actual
-                            mejor_ruta_del_dia = list(orden)
+                            mejor_puntuacion, mejor_ruta_del_dia = puntuacion_actual, list(orden)
             
             if mejor_ruta_del_dia: break
 
@@ -120,12 +107,10 @@ def generar_planificacion_automatica(dias_seleccionados):
 # --- INTERFAZ DE STREAMLIT ---
 def mostrar_planificador_supervisor():
     st.header("Planificador de Martín (Supervisor) 🤖")
-
     st.subheader("1. Selecciona los días para planificar")
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     dias_semana_siguiente = [start_of_next_week + timedelta(days=i) for i in range(5)]
-
     dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
     
     dias_seleccionados = st.multiselect(
@@ -143,72 +128,104 @@ def mostrar_planificador_supervisor():
             with st.spinner("🧠 Analizando todas las visitas y calculando las mejores rutas..."):
                 dias_seleccionados.sort()
                 st.session_state.supervisor_plan, st.session_state.no_asignadas = generar_planificacion_automatica(dias_seleccionados)
-                if 'plan_con_horas' in st.session_state:
-                    del st.session_state.plan_con_horas
-                if st.session_state.supervisor_plan is not None:
-                    st.success("¡Planificación óptima generada!")
+                if 'plan_con_horas' in st.session_state: del st.session_state.plan_con_horas
+                if st.session_state.supervisor_plan is not None: st.success("¡Planificación óptima generada!")
 
     if "supervisor_plan" in st.session_state and st.session_state.supervisor_plan is not None:
         st.subheader("2. Propuesta de Planificación")
-        if not st.session_state.supervisor_plan and not st.session_state.no_asignadas:
-             st.info("No hay visitas para mostrar.")
-        else:
-            plan = st.session_state.supervisor_plan
-            if 'plan_con_horas' not in st.session_state and plan:
-                gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
-                plan_con_horas = {}
-                for day_iso, visitas in plan.items():
-                    day = date.fromisoformat(day_iso)
-                    hora_actual = datetime.combine(day, time(8, 0))
-                    visitas_con_hora = []
+        plan = st.session_state.supervisor_plan
+        if 'plan_con_horas' not in st.session_state and plan:
+            gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
+            plan_con_horas = {}
+            for day_iso, visitas in plan.items():
+                day = date.fromisoformat(day_iso)
+                hora_actual = datetime.combine(day, time(8, 0))
+                visitas_con_hora = []
+                if visitas:
+                    v_primera = visitas[0].copy()
+                    v_primera['hora_asignada'] = hora_actual.strftime('%H:%M')
+                    visitas_con_hora.append(v_primera)
+                    for i in range(len(visitas) - 1):
+                        hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
+                        origen, destino = visitas[i]['direccion_texto'], visitas[i+1]['direccion_texto']
+                        tiempo_viaje = gmaps.distance_matrix(origen, destino, mode="driving")['rows'][0]['elements'][0]['duration']['value']
+                        hora_actual += timedelta(seconds=tiempo_viaje)
+                        v_siguiente = visitas[i+1].copy()
+                        v_siguiente['hora_asignada'] = hora_actual.strftime('%H:%M')
+                        visitas_con_hora.append(v_siguiente)
+                plan_con_horas[day_iso] = visitas_con_hora
+            st.session_state.plan_con_horas = plan_con_horas
 
-                    if visitas:
-                        v_primera = visitas[0].copy()
-                        v_primera['hora_asignada'] = hora_actual.strftime('%H:%M')
-                        visitas_con_hora.append(v_primera)
-                        
-                        for i in range(len(visitas) - 1):
-                            hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
-                            origen = visitas[i]['direccion_texto']
-                            destino = visitas[i+1]['direccion_texto']
-                            tiempo_viaje = gmaps.distance_matrix(origen, destino, mode="driving")['rows'][0]['elements'][0]['duration']['value']
-                            hora_actual += timedelta(seconds=tiempo_viaje)
-                            
-                            v_siguiente = visitas[i+1].copy()
-                            v_siguiente['hora_asignada'] = hora_actual.strftime('%H:%M')
-                            visitas_con_hora.append(v_siguiente)
-                    plan_con_horas[day_iso] = visitas_con_hora
-                st.session_state.plan_con_horas = plan_con_horas
+        # --- INICIO CÓDIGO RESTAURADO: TABS Y MAPA ---
+        tab_plan, tab_mapa = st.tabs(["📅 Propuesta Detallada", "🗺️ Vista en Mapa"])
 
+        with tab_plan:
             if 'plan_con_horas' in st.session_state and st.session_state.plan_con_horas:
                 for day_iso, visitas in st.session_state.plan_con_horas.items():
                     day = date.fromisoformat(day_iso)
-                    nombre_dia_es = dias_es.get(day.strftime('%A'))
+                    nombre_dia_es = dias_es.get(day.strftime('%A'), day.strftime('%A'))
                     nombre_dia_completo = day.strftime(f'{nombre_dia_es}, %d de %B').capitalize()
                     with st.expander(f"**{nombre_dia_completo}** ({len(visitas)} visitas)", expanded=True):
                         for v in visitas:
                             ayuda_texto = " <span style='color:red;'>(ayuda pedida)</span>" if v.get('ayuda_solicitada') else ""
-                            st.markdown(
-                                f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} "
-                                f"(*Propuesto por: {v['nombre_coordinador']}{ayuda_texto}*)",
-                                unsafe_allow_html=True
-                            )
-            
-            st.markdown("---")
-            st.subheader("3. Confirmación")
-            if st.button("✅ Confirmar y Asignar", use_container_width=True, type="primary"):
-                with st.spinner("Actualizando base de datos..."):
-                    if 'plan_con_horas' in st.session_state and st.session_state.plan_con_horas:
-                        for day_iso, visitas in st.session_state.plan_con_horas.items():
-                            for v in visitas:
-                                update_data = {'status': 'Asignada a Supervisor', 'fecha_asignada': day_iso, 'hora_asignada': v['hora_asignada']}
-                                supabase.table('visitas').update(update_data).eq('id', v['id']).execute()
-                    st.success("¡Planificación confirmada y asignada en el sistema!")
-                    for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
-                        if key in st.session_state: del st.session_state[key]
-                    st.rerun()
+                            st.markdown(f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}{ayuda_texto}*)", unsafe_allow_html=True)
+            else:
+                st.info("No hay visitas planificadas para mostrar.")
+
+        with tab_mapa:
+            if 'plan_con_horas' in st.session_state and st.session_state.plan_con_horas:
+                m = folium.Map(location=CATALONIA_CENTER, zoom_start=8)
+                try:
+                    location = Nominatim(user_agent="supervisor_map_v9").geocode(PUNTO_INICIO_MARTIN)
+                    if location: folium.Marker([location.latitude, location.longitude], popup="Punto de Salida de Martín", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
+                except Exception: pass
+
+                day_colors = ['blue', 'red', 'purple', 'orange', 'darkgreen']
+                all_points = []
+                
+                for i, (day_iso, visitas) in enumerate(st.session_state.plan_con_horas.items()):
+                    day = date.fromisoformat(day_iso)
+                    color = day_colors[i % len(day_colors)]
+                    points_of_day = []
+                    for visit_idx, visit in enumerate(visitas):
+                        if pd.notna(visit.get('lat')) and pd.notna(visit.get('lon')):
+                            coords = (visit['lat'], visit['lon'])
+                            points_of_day.append(coords)
+                            all_points.append(coords)
+                            popup_html = f"<b>{dias_es.get(day.strftime('%A'))} - Visita {visit_idx + 1}</b><br><b>Hora:</b> {visit['hora_asignada']}h<br><b>Equipo:</b> {visit['equipo']}<br><b>Dirección:</b> {visit['direccion_texto']}"
+                            DivIcon_html = f'<div style="font-family: sans-serif; color: {color}; font-size: 18px; font-weight: bold; text-shadow: -1px 0 white, 0 1px white, 1px 0 white, 0 -1px white;">{visit_idx + 1}</div>'
+                            folium.Marker(coords, popup=folium.Popup(popup_html, max_width=300), icon=DivIcon(icon_size=(150, 36), icon_anchor=(7, 20), html=DivIcon_html)).add_to(m)
+                    
+                    if len(points_of_day) > 1:
+                        folium.PolyLine(points_of_day, color=color, weight=2.5, opacity=0.8).add_to(m)
+                
+                if all_points:
+                    df_points = pd.DataFrame(all_points, columns=['lat', 'lon'])
+                    sw = df_points[['lat', 'lon']].min().values.tolist()
+                    ne = df_points[['lat', 'lon']].max().values.tolist()
+                    m.fit_bounds([sw, ne])
+                
+                st_folium(m, use_container_width=True, height=500)
+            else:
+                st.info("No hay visitas con coordenadas para mostrar en el mapa.")
+        # --- FIN CÓDIGO RESTAURADO ---
+
+        st.markdown("---")
+        st.subheader("3. Confirmación")
+        if st.button("✅ Confirmar y Asignar", use_container_width=True, type="primary"):
+            with st.spinner("Actualizando base de datos..."):
+                if 'plan_con_horas' in st.session_state and st.session_state.plan_con_horas:
+                    for day_iso, visitas in st.session_state.plan_con_horas.items():
+                        for v in visitas:
+                            update_data = {'status': 'Asignada a Supervisor', 'fecha_asignada': day_iso, 'hora_asignada': v['hora_asignada']}
+                            supabase.table('visitas').update(update_data).eq('id', v['id']).execute()
+                st.success("¡Planificación confirmada y asignada en el sistema!")
+                for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
+                    if key in st.session_state: del st.session_state[key]
+                st.rerun()
 
     if "no_asignadas" in st.session_state and st.session_state.no_asignadas:
         st.warning("Visitas que no se incluyeron en el plan (siguen a cargo de sus coordinadores):")
         for v in st.session_state.no_asignadas:
             st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']}) - *Propuesto por: {v['nombre_coordinador']}*")
+
