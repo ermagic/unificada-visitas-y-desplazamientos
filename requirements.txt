@@ -9,3 +9,5 @@ googlemaps
 holidays
 gspread
 gspread-pandas
+bcrypt
+supabase

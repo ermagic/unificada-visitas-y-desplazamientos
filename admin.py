@@ -1,98 +1,90 @@
-# Fichero: admin.py (Versión final para Google Sheets)
+# Fichero: admin.py (Versión Supabase)
 import streamlit as st
 import pandas as pd
-import bcrypt
-from database import get_data, update_data # <-- CAMBIO IMPORTANTE
+from database import supabase # Importamos el cliente anon
+from supabase import create_client, Client # Necesario para el cliente admin
+
+def get_admin_client() -> Client:
+    """Crea un cliente con permisos de administrador."""
+    try:
+        url = st.secrets["supabase"]["url"]
+        service_key = st.secrets["supabase"]["service_key"]
+        return create_client(url, service_key)
+    except Exception:
+        return None
 
 def mostrar_panel_admin():
-    """Muestra el panel de administración con gestión completa de usuarios desde Google Sheets."""
     st.header("Panel de Administración 👑")
-    
+
+    supabase_admin = get_admin_client()
+    if not supabase or not supabase_admin:
+        st.error("La conexión con la base de datos no está disponible.")
+        st.stop()
+
     # --- Cargar datos ---
-    users_df = get_data("usuarios")
-    # Asegurarse de que la columna 'id' sea numérica para poder calcular el máximo
-    if not users_df.empty:
-        users_df['id'] = pd.to_numeric(users_df['id'])
+    users_response = supabase.table('usuarios').select('id, nombre_completo, rol').execute()
+    users_df = pd.DataFrame(users_response.data)
 
     tab_manage, tab_add = st.tabs(["👥 Gestionar Usuarios", "➕ Añadir Nuevo Usuario"])
 
     # --- PESTAÑA 1: GESTIONAR USUARIOS ---
     with tab_manage:
-        st.subheader("Editar o Eliminar un Usuario")
-
+        st.subheader("Ver o Eliminar un Usuario")
         if users_df.empty:
             st.warning("No hay usuarios para gestionar.")
         else:
-            user_options = users_df['username'].tolist()
-            selected_username = st.selectbox(
-                "Selecciona un usuario:",
-                options=user_options,
-                index=None,
-                placeholder="Elige un usuario..."
+            st.dataframe(users_df.rename(columns={
+                'id': 'ID de Usuario',
+                'nombre_completo': 'Nombre Completo',
+                'rol': 'Rol'
+            }))
+            
+            st.markdown("---")
+            st.subheader("Eliminar un usuario")
+            user_to_delete_id = st.selectbox(
+                "Selecciona un usuario para eliminar (por su ID):",
+                options=[user_id for user_id in users_df['id'] if user_id != st.session_state['usuario_id']],
+                format_func=lambda x: users_df.loc[users_df['id'] == x, 'nombre_completo'].iloc[0]
             )
 
-            if selected_username:
-                user_data = users_df[users_df['username'] == selected_username].iloc[0]
-                
-                with st.form(f"edit_user_{user_data['id']}"):
-                    st.write(f"#### Editando a *{user_data['nombre_completo']}*")
-                    new_username = st.text_input("Nuevo nombre de usuario", value=user_data['username'])
-                    new_password = st.text_input("Nueva contraseña (dejar en blanco para no cambiar)", type="password")
-
-                    if st.form_submit_button("💾 Guardar Cambios"):
-                        changes_made = False
-                        user_index = user_data.name
-                        
-                        if new_username and new_username != user_data['username']:
-                            users_df.loc[user_index, 'username'] = new_username
-                            changes_made = True
-
-                        if new_password:
-                            hashed_pw = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                            users_df.loc[user_index, 'password_hash'] = hashed_pw
-                            changes_made = True
-
-                        if changes_made:
-                            if update_data("usuarios", users_df):
-                                st.success("Usuario actualizado.")
-                                st.rerun()
-                        else:
-                            st.warning("No se ha modificado ningún campo.")
-
-                st.markdown("---")
-                if st.button(f"🗑️ Eliminar usuario {user_data['username']}", type="secondary"):
-                    users_df.drop(index=user_data.name, inplace=True)
-                    if update_data("usuarios", users_df):
-                        st.success(f"Usuario '{user_data['username']}' eliminado.")
-                        st.rerun()
+            if st.button(f"🗑️ Eliminar usuario seleccionado", type="secondary"):
+                try:
+                    # Usamos el cliente admin para borrar el usuario de auth
+                    supabase_admin.auth.admin.delete_user(user_to_delete_id)
+                    # La tabla 'usuarios' se actualiza en cascada gracias al FOREIGN KEY
+                    st.success(f"Usuario eliminado correctamente.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al eliminar usuario: {e}")
 
     # --- PESTAÑA 2: AÑADIR NUEVO USUARIO ---
     with tab_add:
         with st.form("add_user_form", clear_on_submit=True):
             nombre = st.text_input("Nombre Completo")
-            user = st.text_input("Nombre de Usuario (login)")
+            email = st.text_input("Email del Usuario (para login)")
             pwd = st.text_input("Contraseña", type="password")
             rol = st.selectbox("Rol", ["coordinador", "admin"])
             
             if st.form_submit_button("➕ Crear Usuario"):
-                if not (nombre and user and pwd and rol):
+                if not all([nombre, email, pwd, rol]):
                     st.warning("Rellena todos los campos.")
-                elif not users_df[users_df['username'] == user].empty:
-                    st.error(f"El usuario '{user}' ya existe.")
                 else:
-                    hashed_pw = bcrypt.hashpw(pwd.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                    new_id = (users_df['id'].max() + 1) if not users_df.empty else 1
-                    
-                    new_user_df = pd.DataFrame([{
-                        'id': new_id,
-                        'nombre_completo': nombre,
-                        'username': user,
-                        'password_hash': hashed_pw,
-                        'rol': rol
-                    }])
-                    
-                    updated_df = pd.concat([users_df, new_user_df], ignore_index=True)
-                    
-                    if update_data("usuarios", updated_df):
-                        st.success(f"Usuario '{user}' creado.")
-                        st.rerun()
+                    try:
+                        # 1. Crear el usuario en el sistema de autenticación de Supabase
+                        user_response = supabase.auth.sign_up({
+                            "email": email,
+                            "password": pwd
+                        })
+                        new_user = user_response.user
+                        
+                        if new_user:
+                            # 2. Insertar el perfil en la tabla 'usuarios'
+                            supabase.table('usuarios').insert({
+                                'id': new_user.id,
+                                'nombre_completo': nombre,
+                                'rol': rol
+                            }).execute()
+                            st.success(f"Usuario '{email}' creado.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al crear el usuario: {e}")

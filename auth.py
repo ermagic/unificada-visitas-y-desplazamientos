@@ -1,36 +1,34 @@
-# Fichero: auth.py (Versión final corregida)
-import pandas as pd
-import bcrypt
-from database import get_data
+# Fichero: auth.py (Versión Supabase)
+import streamlit as st
+from database import supabase # Importamos el cliente ya inicializado
 
-def verificar_usuario(username, password):
+def verificar_usuario(email, password):
     """
-    Verifica las credenciales del usuario contra los datos de Google Sheets.
-    Usa bcrypt para comparar la contraseña de forma segura.
+    Verifica las credenciales del usuario contra la autenticación de Supabase.
+    Devuelve los datos del usuario y su perfil si es exitoso.
     """
-    users_df = get_data("usuarios")
-    
-    # Si el DataFrame está vacío o hay un error, no se puede verificar.
-    if users_df.empty:
-        st.error("No se pudo cargar la información de usuarios desde la base de datos.")
+    if not supabase:
+        st.error("La conexión con la base de datos no está disponible.")
         return None
+        
+    try:
+        # Supabase se encarga de la seguridad, el hashing y la verificación.
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        user = response.user
+        
+        if user:
+            # Si el login es exitoso, obtenemos su perfil de la tabla 'usuarios'
+            profile_response = supabase.table('usuarios').select('*').eq('id', user.id).single().execute()
+            user_data = profile_response.data
+            return user_data # Devuelve el perfil completo (id, nombre_completo, rol)
 
-    user_data_row = users_df[users_df['username'] == username]
-
-    # Si no se encuentra el usuario por su 'username', no existe.
-    if user_data_row.empty:
+    except Exception as e:
+        # Supabase devuelve un error si las credenciales son incorrectas
+        # Lo capturamos para no mostrar mensajes de error técnicos al usuario.
         return None
-
-    user_data = user_data_row.iloc[0]
     
-    # Extraemos el hash de la contraseña guardado en Google Sheets.
-    password_hash_from_sheet = user_data['password_hash']
-
-    # Usamos bcrypt.checkpw para comparar la contraseña introducida (en bytes)
-    # con el hash guardado (también en bytes).
-    if bcrypt.checkpw(password.encode('utf-8'), password_hash_from_sheet.encode('utf-8')):
-        # Si la contraseña es correcta, devolvemos los datos del usuario.
-        return user_data.to_dict()
-    
-    # Si la contraseña no coincide, devolvemos None.
     return None
