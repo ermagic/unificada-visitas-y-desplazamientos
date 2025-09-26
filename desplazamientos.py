@@ -1,4 +1,4 @@
-# Fichero: desplazamientos.py (Versión con Código de Diagnóstico)
+# Fichero: desplazamientos.py (Versión Final con corrección de LÍMITE DE FILAS)
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -23,7 +23,8 @@ def inicializar_estado_calculadora():
 def cargar_datos_tiempos():
     """Carga los datos de tiempos desde la tabla 'tiempos' de Supabase."""
     try:
-        response = supabase.table('tiempos').select('*').execute()
+        # --- LÍNEA CORREGIDA: Añadimos .limit(3000) para traer más de 1000 filas ---
+        response = supabase.table('tiempos').select('*').limit(3000).execute()
         df = pd.DataFrame(response.data)
         
         if df.empty:
@@ -70,7 +71,8 @@ def cargar_datos_tiempos():
 def cargar_datos_empleados():
     """Carga los datos de empleados activos desde la tabla 'empleados' de Supabase."""
     try:
-        response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').execute()
+        # Asumiendo que la tabla de empleados es más pequeña, pero podemos añadir un límite si es necesario
+        response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').limit(1000).execute()
         df = pd.DataFrame(response.data)
 
         if df.empty:
@@ -149,17 +151,13 @@ def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
     df_tiempos = cargar_datos_tiempos()
 
-    # --- INICIO DEL CÓDIGO DE DIAGNÓSTICO TEMPORAL ---
+    # (Puedes borrar el código de diagnóstico si ya no lo necesitas)
     if df_tiempos is not None:
         with st.expander("🔍 DATOS CARGADOS DESDE SUPABASE (PARA DEPURACIÓN)"):
             st.write("Provincias únicas encontradas en la columna `provincia_ct`:")
-            # Mostramos las provincias tal y como las lee el programa
             st.code(sorted(df_tiempos['provincia_ct'].unique()))
-            
             st.write("Filas de la tabla donde la población contiene 'Barcelona':")
-            # Buscamos la fila de Barcelona y mostramos sus datos para compararlos
             st.dataframe(df_tiempos[df_tiempos['poblacion'].str.contains("Barcelona", case=False)])
-    # --- FIN DEL CÓDIGO DE DIAGNÓSTICO ---
 
     def _cargo(minutos): return max(0, int(minutos) - 30)
 
@@ -226,7 +224,7 @@ def pagina_calculadora():
         centros_map, lista_provincias_ct = {}, ["(Escribir dirección manual)"]
         if df_tiempos is not None:
             centros_df = df_tiempos[['provincia_ct', 'centro_trabajo']].drop_duplicates(subset=['provincia_ct'])
-            centros_map = pd.Series(centros_df.centro_trabajo.values, index=centros_df.provincia_ct).to_dict()
+            centros_map = pd.Series(centros_df.centro_trabajo.values, index=df_tiempos.provincia_ct).to_dict()
             lista_provincias_ct.extend(sorted(centros_map.keys()))
 
         def update_field_from_select(field_key, select_key):
