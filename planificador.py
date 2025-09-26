@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con flujo de envío y corrección de error)
+# Fichero: planificador.py (Versión con todas las correcciones)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, date, datetime
@@ -100,10 +100,8 @@ def mostrar_planificador():
         
         st.markdown("Puedes añadir, editar o eliminar filas. **No olvides guardar los cambios.**")
 
-        ### NUEVA CORRECCIÓN: Evitar el editor si no hay datos ###
         if df_para_editar.empty:
             st.info("✅ No tienes visitas en estado 'Borrador' para esta semana.")
-            # Creamos un dataframe vacío con las mismas columnas para que el resto del código no falle
             edited_df = pd.DataFrame(columns=df_para_editar.columns)
         else:
             edited_df = st.data_editor(df_para_editar, num_rows="dynamic", column_order=['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones'],
@@ -115,7 +113,6 @@ def mostrar_planificador():
 
         col1, col2 = st.columns(2)
         with col1:
-            # Desactivamos el botón de guardar si no hay nada que editar
             disable_save = edited_df.empty and df_propuestas_original.empty
             if st.button("💾 Guardar Cambios en Borradores", type="primary", use_container_width=True, disabled=disable_save):
                 with st.spinner("Guardando..."):
@@ -127,7 +124,6 @@ def mostrar_planificador():
                     
                     for _, row in edited_df.iterrows():
                         if pd.isna(row['fecha']) or pd.isna(row['franja_horaria']) or pd.isna(row['direccion_texto']): continue
-                        # La conversión a .date() se hace aquí para asegurar el tipo correcto
                         fecha_obj = row['fecha'] if isinstance(row['fecha'], date) else row['fecha'].date()
                         if fecha_obj.weekday() == 4 and row['franja_horaria'] not in HORAS_VIERNES: 
                             st.error(f"La franja '{row['franja_horaria']}' no es válida para un viernes. Fila ignorada."); continue
@@ -141,7 +137,6 @@ def mostrar_planificador():
                     st.success("¡Borradores actualizados!"); st.rerun()
 
         with col2:
-            # Desactivamos el botón de enviar si no hay borradores guardados
             disable_send = df_propuestas_original.empty
             if st.button("✅ Enviar Planificación a Supervisor", use_container_width=True, disabled=disable_send):
                 with st.spinner("Enviando visitas para asignación..."):
@@ -166,17 +161,27 @@ def mostrar_planificador():
             end_of_week_cal = start_of_week_cal + timedelta(days=6)
             st.info(f"Mostrando visitas para la semana del {start_of_week_cal.strftime('%d/%m/%Y')} al {end_of_week_cal.strftime('%d/%m/%Y')}")
             
-            # Filtro modificado para incluir visitas asignadas fuera de su semana original
             df_semana_filtrada_prop = all_visits_df[
                 (all_visits_df['fecha'].dt.date >= start_of_week_cal) & 
                 (all_visits_df['fecha'].dt.date <= end_of_week_cal)
             ]
-            df_semana_filtrada_asig = all_visits_df[
-                (pd.to_datetime(all_visits_df['fecha_asignada']).dt.date >= start_of_week_cal) & 
-                (pd.to_datetime(all_visits_df['fecha_asignada']).dt.date <= end_of_week_cal)
-            ]
-            df_semana_filtrada = pd.concat([df_semana_filtrada_prop, df_semana_filtrada_asig]).drop_duplicates(subset=['id']).reset_index(drop=True)
+            
+            ### INICIO DE LA CORRECCIÓN ###
+            # 1. Filtramos primero para quitar las filas donde 'fecha_asignada' es nula.
+            df_con_fecha_asignada = all_visits_df.dropna(subset=['fecha_asignada'])
+            
+            # 2. Solo si el DataFrame resultante no está vacío, procedemos a comparar fechas.
+            if not df_con_fecha_asignada.empty:
+                df_semana_filtrada_asig = df_con_fecha_asignada[
+                    (pd.to_datetime(df_con_fecha_asignada['fecha_asignada']).dt.date >= start_of_week_cal) & 
+                    (pd.to_datetime(df_con_fecha_asignada['fecha_asignada']).dt.date <= end_of_week_cal)
+                ]
+            else:
+                # Si no hay ninguna visita con fecha asignada, creamos un DataFrame vacío.
+                df_semana_filtrada_asig = pd.DataFrame()
+            ### FIN DE LA CORRECCIÓN ###
 
+            df_semana_filtrada = pd.concat([df_semana_filtrada_prop, df_semana_filtrada_asig]).drop_duplicates(subset=['id']).reset_index(drop=True)
 
             if not df_semana_filtrada.empty:
                 calendar_events = []
