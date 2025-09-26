@@ -1,6 +1,6 @@
-# Fichero: app.py (Versión Final)
+# Fichero: app.py (Versión Final Corregida)
 import streamlit as st
-from auth import verificar_usuario_supabase # <--- CAMBIO IMPORTANTE
+from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
 from planificador import mostrar_planificador
 from admin import mostrar_panel_admin
@@ -20,18 +20,21 @@ if not st.session_state.logged_in:
         password = st.text_input("Contraseña", type="password")
         
         if st.form_submit_button("Iniciar Sesión", type="primary"):
-            # Llamamos a la nueva función de autenticación de Supabase
+            # Llamamos a la función de autenticación de Supabase
             user_profile = verificar_usuario_supabase(email, password)
             
             if user_profile:
                 st.session_state.logged_in = True
-                # Guardamos los datos del perfil obtenidos de la tabla 'usuarios'
-                st.session_state.email = user_profile['email'] # Asumiendo que tienes un campo email
+                # --- LÍNEA CORREGIDA ---
+                # Guardamos el email del formulario, ya que no está en la tabla de perfiles.
+                st.session_state.email = email
+                
+                # Guardamos el resto de los datos del perfil obtenidos de la tabla 'usuarios'
                 st.session_state.nombre_completo = user_profile['nombre_completo']
                 st.session_state.rol = user_profile['rol']
                 st.session_state.usuario_id = user_profile['id'] # Este es el UUID
                 st.rerun()
-            # La función verificar_usuario_supabase ya muestra el st.error()
+            # La función verificar_usuario_supabase ya se encarga de mostrar el st.error() si falla
 else:
     # --- Aplicación Principal (si el usuario ha iniciado sesión) ---
     with st.sidebar:
@@ -48,6 +51,7 @@ else:
         st.markdown("---")
         if st.button("Cerrar Sesión"):
             supabase.auth.sign_out() # Cerramos sesión en Supabase
+            # Limpiamos todo el estado de la sesión para un logout limpio
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
