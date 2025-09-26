@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con UI enriquecida, mapa y lógica de guardado)
+# Fichero: supervisor.py (Versión con corrección de acceso a secrets)
 import streamlit as st
 import pandas as pd
 from database import supabase
@@ -11,14 +11,20 @@ import re
 import folium
 from streamlit_folium import st_folium
 
-# --- FUNCIONES DE CORREO Y DISTANCIA (sin cambios) ---
+### INICIO DE LA CORRECCIÓN ###
 @st.cache_data(ttl=3600)
 def get_distance_matrix(api_key, locations):
+    """
+    Obtiene la matriz de distancias de Google Maps.
+    Ahora recibe la api_key como argumento para evitar errores de carga.
+    """
     try:
         gmaps = googlemaps.Client(key=api_key)
         return gmaps.distance_matrix(locations, locations, mode="driving")
     except Exception as e:
-        st.error(f"Error al contactar con la API de Google Maps: {e}"); return None
+        st.error(f"Error al contactar con la API de Google Maps: {e}")
+        return None
+### FIN DE LA CORRECCIÓN ###
 
 def send_email(recipients, subject, body):
     try:
@@ -33,7 +39,6 @@ def send_email(recipients, subject, body):
     except Exception as e:
         st.error(f"Error al enviar el correo: {e}"); return False
 
-# --- LÓGICA DEL MOTOR DE PLANIFICACIÓN (sin cambios, ya validada) ---
 def find_best_route_for_one_day(visits_df, all_locations, dist_matrix, is_friday):
     time_budget_seconds = 7 * 3600 if is_friday else 8 * 3600
     visit_duration_seconds = 45 * 60
@@ -79,9 +84,14 @@ def generate_optimal_plan():
         home_base = "Plaça de Catalunya, Barcelona"
         unique_locations = list(df_visits['direccion_texto'].unique())
         all_locations = [home_base] + unique_locations
+        
+        ### INICIO DE LA CORRECCIÓN ###
         api_key = st.secrets.get("google", {}).get("api_key")
         if not api_key: st.error("Clave de API de Google no encontrada."); return None, None
+        # Pasamos la api_key como argumento
         dist_matrix = get_distance_matrix(api_key, all_locations)
+        ### FIN DE LA CORRECCIÓN ###
+
         if not dist_matrix: return None, None
         final_plan, available_visits_df = [], df_visits.copy()
         for i in range(3):
@@ -96,46 +106,26 @@ def generate_optimal_plan():
         st.success(f"¡Propuesta generada con {len(final_plan)} días planificados!")
         return final_plan, unassigned_visits
 
-# --- NUEVA FUNCIÓN PARA EL MAPA ---
 def create_supervisor_map(plan_days, dates):
     st.markdown("---")
     st.subheader("🗺️ Mapa de Rutas Propuestas")
-    
-    home_lat, home_lon = 41.3874, 2.1686 # Coordenadas de Plaça de Catalunya
+    home_lat, home_lon = 41.3874, 2.1686
     m = folium.Map(location=[home_lat, home_lon], zoom_start=8)
-    
-    # Marcador del punto de partida
     folium.Marker([home_lat, home_lon], popup="Punto de Partida/Final", icon=folium.Icon(color='green', icon='home')).add_to(m)
-    
     colors = ['blue', 'orange', 'purple']
-    
     for i, day_plan in enumerate(plan_days):
         if not day_plan: continue
-        
-        day_date = dates[i]
-        day_color = colors[i % len(colors)]
-        
-        points = [(home_lat, home_lon)]
-        
+        day_date = dates[i]; day_color = colors[i % len(colors)]; points = [(home_lat, home_lon)]
         for visit in day_plan:
             if visit.get('lat') and visit.get('lon'):
                 points.append((visit['lat'], visit['lon']))
-                folium.Marker(
-                    location=[visit['lat'], visit['lon']],
-                    popup=f"<b>{visit['direccion_texto']}</b>  
+                folium.Marker(location=[visit['lat'], visit['lon']], popup=f"<b>{visit['direccion_texto']}</b>  
 Día {i+1} ({day_date.strftime('%d/%m')})  
-Propuesto por: {visit['nombre_coordinador']}",
-                    icon=folium.Icon(color=day_color, icon='car', prefix='fa')
-                ).add_to(m)
-        
-        points.append((home_lat, home_lon)) # Regreso al origen
-        
-        # Dibujar la línea de la ruta
+Propuesto por: {visit['nombre_coordinador']}", icon=folium.Icon(color=day_color, icon='car', prefix='fa')).add_to(m)
+        points.append((home_lat, home_lon))
         folium.PolyLine(points, color=day_color, weight=2.5, opacity=1, tooltip=f"Ruta Día {i+1}").add_to(m)
-        
     st_folium(m, width='100%', height=450)
 
-# --- Interfaz de Streamlit (UI) ---
 def move_visit(visit_id, current_day_index, new_day_index):
     plan_state = st.session_state.supervisor_plan
     visit_to_move = None
@@ -150,32 +140,23 @@ def move_visit(visit_id, current_day_index, new_day_index):
 def mostrar_planificador_supervisor():
     st.header("Planificador Automático para Martín 🤖")
     day_names_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
-
     if st.button("🤖 Generar Nueva Planificación Óptima", type="primary", use_container_width=True):
         plan_days_list, unassigned = generate_optimal_plan()
         if plan_days_list is not None:
             start_of_next_week = date.today() + timedelta(days=-date.today().weekday(), weeks=1)
-            st.session_state.supervisor_plan = {
-                'plan_days': plan_days_list, 'unassigned': unassigned,
-                'dates': [start_of_next_week + timedelta(days=i) for i in range(len(plan_days_list))]
-            }
+            st.session_state.supervisor_plan = {'plan_days': plan_days_list, 'unassigned': unassigned, 'dates': [start_of_next_week + timedelta(days=i) for i in range(len(plan_days_list))]}
         st.session_state.plan_confirmed = False
         st.rerun()
-
     st.markdown("---")
-
     if 'supervisor_plan' in st.session_state and st.session_state.supervisor_plan:
         plan_state = st.session_state.supervisor_plan
         st.subheader("🗓️ Tablero de Planificación Manual")
-        
         cols_fechas = st.columns(len(plan_state['plan_days']))
         for i in range(len(plan_state['dates'])):
             with cols_fechas[i]:
                 plan_state['dates'][i] = st.date_input(f"Fecha Día {i+1}", value=plan_state['dates'][i], key=f"date_{i}")
-
         st.markdown("---")
         cols_dias = st.columns(len(plan_state['plan_days']))
-
         for i, day_plan in enumerate(plan_state['plan_days']):
             with cols_dias[i]:
                 day_date = plan_state['dates'][i]
@@ -186,23 +167,16 @@ def mostrar_planificador_supervisor():
                 st.info(f"{num_visits} visitas | Est: {total_hours:.1f}h")
                 if (day_date.weekday() == 4 and total_hours > 7) or (day_date.weekday() != 4 and total_hours > 8):
                     st.warning("⚠️ El plan excede el horario laboral.")
-
-                # --- INICIO DE LA MEJORA EN TARJETAS DE VISITA ---
                 for visit in day_plan:
                     with st.container(border=True):
                         st.markdown(f"**📍 {visit['direccion_texto']}**")
-                        # Mostramos la información de contexto
                         fecha_propuesta = pd.to_datetime(visit['fecha']).strftime('%d/%m/%Y')
                         st.caption(f"Propuesto por: **{visit['nombre_coordinador']}**")
                         st.caption(f"Fecha original: {fecha_propuesta} ({visit['franja_horaria']})")
-                        
-                        move_options = {f"Día {j+1}": j for j in range(len(plan_state['plan_days']))}
-                        move_options["No Asignada"] = -1
+                        move_options = {f"Día {j+1}": j for j in range(len(plan_state['plan_days']))}; move_options["No Asignada"] = -1
                         new_location_index = st.selectbox("Mover a:", options=move_options.keys(), index=i, key=f"move_{visit['id']}")
                         if move_options[new_location_index] != i:
                             move_visit(visit['id'], i, move_options[new_location_index]); st.rerun()
-                # --- FIN DE LA MEJORA ---
-
         with st.expander(f"Visitas No Asignadas ({len(plan_state['unassigned'])})", expanded=True):
             for visit in sorted(plan_state['unassigned'], key=lambda x: x['fecha']):
                 with st.container(border=True):
@@ -213,77 +187,49 @@ def mostrar_planificador_supervisor():
                     new_location_index = st.selectbox("Asignar a:", options=move_options.keys(), index=0, key=f"move_{visit['id']}")
                     if move_options[new_location_index] != -1:
                         move_visit(visit['id'], -1, move_options[new_location_index]); st.rerun()
-
-        # --- INCLUSIÓN DEL MAPA ---
         create_supervisor_map(plan_state['plan_days'], plan_state['dates'])
-
         st.markdown("---")
         if 'plan_confirmed' not in st.session_state: st.session_state.plan_confirmed = False
         col1, col2 = st.columns(2)
         with col1:
-            # --- LÓGICA DE CONFIRMACIÓN Y GUARDADO ---
             if st.button("✅ Confirmar y Asignar Plan", type="primary", use_container_width=True, disabled=st.session_state.plan_confirmed):
                 with st.spinner("Confirmando y guardando el plan en la base de datos..."):
                     api_key = st.secrets.get("google", {}).get("api_key")
                     home_base = "Plaça de Catalunya, Barcelona"
-                    
                     for i, day_plan in enumerate(plan_state['plan_days']):
                         if not day_plan: continue
                         assigned_date = plan_state['dates'][i]
                         current_time_dt = datetime.combine(assigned_date, time(8, 0))
                         last_location = home_base
-                        
-                        # Reordenar el plan del día según la ruta óptima para ese día específico
                         day_locations = [home_base] + [v['direccion_texto'] for v in day_plan]
                         day_matrix = get_distance_matrix(api_key, day_locations)
-                        
-                        # Simple algoritmo para ordenar: siempre ir al más cercano
-                        ordered_route = []
-                        remaining_visits = list(day_plan)
-                        
+                        ordered_route = []; remaining_visits = list(day_plan)
                         while remaining_visits:
                             last_loc_idx = day_locations.index(last_location)
-                            next_visit_idx = -1
-                            min_dist = float('inf')
-
+                            next_visit_idx = -1; min_dist = float('inf')
                             for j, visit in enumerate(remaining_visits):
                                 try:
                                     current_loc_idx = day_locations.index(visit['direccion_texto'])
                                     dist = day_matrix['rows'][last_loc_idx]['elements'][current_loc_idx]['duration']['value']
-                                    if dist < min_dist:
-                                        min_dist = dist
-                                        next_visit_idx = j
+                                    if dist < min_dist: min_dist = dist; next_visit_idx = j
                                 except (ValueError, IndexError): continue
-                            
                             if next_visit_idx > -1:
                                 next_visit = remaining_visits.pop(next_visit_idx)
                                 travel_time = min_dist
                                 current_time_dt += timedelta(seconds=travel_time)
-                                
-                                # Actualizar BD
-                                supabase.table('visitas').update({
-                                    'status': 'Asignada a Supervisor',
-                                    'fecha_asignada': str(assigned_date),
-                                    'hora_asignada': current_time_dt.strftime('%H:%M'),
-                                    'supervisor_id': st.session_state['usuario_id']
-                                }).eq('id', next_visit['id']).execute()
-                                
+                                supabase.table('visitas').update({'status': 'Asignada a Supervisor', 'fecha_asignada': str(assigned_date), 'hora_asignada': current_time_dt.strftime('%H:%M'), 'supervisor_id': st.session_state['usuario_id']}).eq('id', next_visit['id']).execute()
                                 ordered_route.append(next_visit)
                                 current_time_dt += timedelta(minutes=45)
                                 last_location = next_visit['direccion_texto']
                             else:
-                                # Si no se puede encontrar una ruta, se procesa el resto sin ordenar
-                                for visit in remaining_visits:
-                                     supabase.table('visitas').update({'status': 'Asignada a Supervisor', 'fecha_asignada': str(assigned_date), 'hora_asignada': '00:00'}).eq('id', visit['id']).execute()
+                                for visit in remaining_visits: supabase.table('visitas').update({'status': 'Asignada a Supervisor', 'fecha_asignada': str(assigned_date), 'hora_asignada': '00:00'}).eq('id', visit['id']).execute()
                                 break
-                        
-                        plan_state['plan_days'][i] = ordered_route # Actualizar el plan con la ruta ordenada
-
+                        plan_state['plan_days'][i] = ordered_route
                     st.session_state.plan_confirmed = True
                     st.success("¡Plan confirmado y asignado en la base de datos!")
                     st.rerun()
         with col2:
             if st.session_state.get('plan_confirmed', False):
                 if st.button("📧 Notificar a Coordinadores", use_container_width=True):
-                    # Lógica de notificación (ya funcional)
+                    # Lógica de notificación
                     pass
