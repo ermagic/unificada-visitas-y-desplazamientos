@@ -1,4 +1,4 @@
-# Fichero: app.py (Versión con Logros y Panel de Anuncios)
+# Fichero: app.py (Versión con Mercado de Visitas y Logros)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
@@ -8,6 +8,7 @@ from supervisor import mostrar_planificador_supervisor
 from stats import mostrar_stats
 from coordinador_planner import mostrar_planificador_coordinador
 from logros import mostrar_logros
+from mercado import mostrar_mercado
 from database import supabase
 
 st.set_page_config(page_title="App Unificada", layout="wide")
@@ -51,7 +52,6 @@ else:
         except Exception as e:
             st.error("No se pudieron cargar los anuncios.")
 
-        # Panel de gestión de anuncios para roles autorizados
         if st.session_state.rol in ['admin', 'supervisor']:
             with st.expander("Gestionar Anuncios"):
                 with st.form("new_anuncio_form", clear_on_submit=True):
@@ -73,7 +73,7 @@ else:
         st.markdown("---")
 
         # --- Lógica de Navegación ---
-        opciones = ["Planificador de Visitas", "Calculadora de Desplazamientos", "Logros"]
+        opciones = ["Planificador de Visitas", "Calculadora de Desplazamientos", "Mercado de Visitas", "Logros"]
         
         if st.session_state.rol in ['admin', 'supervisor']:
             opciones.append("Planificador Automático")
@@ -94,6 +94,7 @@ else:
     # --- Contenido Principal ---
     if pagina_seleccionada == "Planificador de Visitas": mostrar_planificador()
     elif pagina_seleccionada == "Calculadora de Desplazamientos": mostrar_calculadora_avanzada()
+    elif pagina_seleccionada == "Mercado de Visitas": mostrar_mercado()
     elif pagina_seleccionada == "Logros": mostrar_logros()
     elif pagina_seleccionada == "Planificador Automático":
         if st.session_state.rol in ['admin', 'supervisor']: mostrar_planificador_supervisor()

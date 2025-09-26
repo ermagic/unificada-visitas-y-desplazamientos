@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con todas las mejoras integradas)
+# Fichero: planificador.py (Versión con Mercado de Visitas)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -191,17 +191,17 @@ def mostrar_planificador():
         if not visitas_semana:
             st.info("No tienes visitas propuestas para la semana seleccionada.")
         else:
-            st.success("Puedes solicitar la ayuda de Martín para **una visita por semana**. Se incluirá de forma garantizada en su planificación.")
+            st.success("Puedes solicitar ayuda a Martín u ofrecer una visita al equipo para intercambiarla.")
             
             for visita in visitas_semana:
                 with st.container(border=True):
-                    col1, col2, col3 = st.columns([2, 2, 1])
+                    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
                     with col1:
                         st.markdown(f"**📍 {visita['direccion_texto']}**")
                         st.write(f"**🗓️ {visita['fecha']}** | 🕒 {visita['franja_horaria']}")
                     with col2:
                         st.write(f"**Equipo:** {visita['equipo']}")
-                        st.caption(f"Obs: {visita['observaciones'] if visita['observaciones'] else 'Ninguna'}")
+                        st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
 
                     with col3:
                         if visita.get('ayuda_solicitada'):
@@ -211,4 +211,14 @@ def mostrar_planificador():
                         else:
                             if st.button("🙋 Pedir Ayuda a Martín", key=f"ask_{visita['id']}", use_container_width=True, disabled=ayuda_ya_solicitada, help="Solicitar que esta visita sea incluida en el plan de Martín"):
                                 supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute()
+                                st.rerun()
+                    
+                    with col4:
+                        if visita.get('en_mercado'):
+                            if st.button("↩️ Retirar", key=f"unoffer_{visita['id']}", use_container_width=True, help="Retirar la visita del mercado"):
+                                supabase.table('visitas').update({'en_mercado': False}).eq('id', visita['id']).execute()
+                                st.rerun()
+                        else:
+                            if st.button("🤝 Ofrecer", key=f"offer_{visita['id']}", use_container_width=True, help="Ofrecer esta visita al resto del equipo"):
+                                supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute()
                                 st.rerun()
