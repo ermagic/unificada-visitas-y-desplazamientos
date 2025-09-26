@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con rediseño visual profesional)
+# Fichero: planificador.py (Versión final con rediseño visual profesional)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -17,14 +17,14 @@ HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v19")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v20")
         location = geolocator.geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
         return None, None
     except Exception: return None, None
 
 def mostrar_planificador():
-    st.header("🗓️ Planificador de Visitas", divider="royalblue")
+    st.header("🗓️ Planificador de Visitas", divider="blue")
     if not supabase: st.error("Sin conexión a base de datos."); st.stop()
 
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global de la Semana", "✍️ Mi Planificación"])

@@ -1,3 +1,4 @@
+# Fichero: requirements.txt (Sin cambios)
 streamlit
 pandas
 geopy

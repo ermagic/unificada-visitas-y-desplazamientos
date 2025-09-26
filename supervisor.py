@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con rediseño visual profesional)
+# Fichero: supervisor.py (Versión final con rediseño visual profesional)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -74,8 +74,7 @@ def generar_planificacion_automatica():
     for dia_laboral in dias_disponibles:
         presupuesto_tiempo_dia = get_daily_time_budget(dia_laboral.weekday())
         visitas_disponibles_hoy = [v for v in visitas_pendientes if v['id'] not in visitas_ya_planificadas_ids]
-        if not visitas_disponibles_hoy:
-            break
+        if not visitas_disponibles_hoy: break
 
         mejor_ruta_del_dia, mejor_puntuacion = [], (-1, float('inf'))
         for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
@@ -90,8 +89,7 @@ def generar_planificacion_automatica():
                         puntuacion_actual = (len(orden), tiempo_total)
                         if puntuacion_actual[0] > mejor_puntuacion[0] or (puntuacion_actual[0] == mejor_puntuacion[0] and puntuacion_actual[1] < mejor_puntuacion[1]):
                             mejor_puntuacion, mejor_ruta_del_dia = puntuacion_actual, list(orden)
-            if mejor_ruta_del_dia:
-                break
+            if mejor_ruta_del_dia: break
 
         if mejor_ruta_del_dia:
             plan_final[dia_laboral.isoformat()] = mejor_ruta_del_dia
@@ -103,7 +101,7 @@ def generar_planificacion_automatica():
 
 # --- INTERFAZ DE STREAMLIT ---
 def mostrar_planificador_supervisor():
-    st.header("🤖 Planificador Automático del Supervisor", divider="royalblue")
+    st.header("🤖 Planificador Automático del Supervisor", divider="blue")
 
     if st.button("🚀 Generar Planificación Óptima para la Próxima Semana", type="primary", use_container_width=True):
         with st.spinner("🧠 Analizando todas las visitas y calculando las mejores rutas..."):
@@ -151,7 +149,6 @@ def mostrar_planificador_supervisor():
                 else:
                     map_center = [df_visitas['lat'].mean(), df_visitas['lon'].mean()]
                     m = folium.Map(location=map_center, zoom_start=11)
-
                     try:
                         location = Nominatim(user_agent="supervisor_map_v9").geocode(PUNTO_INICIO_MARTIN)
                         if location:
@@ -171,7 +168,6 @@ def mostrar_planificador_supervisor():
                                 folium.Marker([visit['lat'], visit['lon']], popup=folium.Popup(popup_html, max_width=300), icon=DivIcon(icon_size=(150, 36), icon_anchor=(7, 20), html=DivIcon_html)).add_to(m)
                         if len(points) > 1:
                             folium.PolyLine(points, color=color, weight=2.5, opacity=0.8).add_to(m)
-                    
                     if not df_visitas.empty:
                         m.fit_bounds([df_visitas[['lat', 'lon']].min().values.tolist(), df_visitas[['lat', 'lon']].max().values.tolist()])
                     st_folium(m, use_container_width=True, height=500)
@@ -185,15 +181,12 @@ def mostrar_planificador_supervisor():
                         for day_iso, visitas in st.session_state.plan_con_horas.items():
                             for v in visitas:
                                 supabase.table('visitas').update({
-                                    'status': 'Asignada a Supervisor',
-                                    'fecha_asignada': day_iso,
-                                    'hora_asignada': v['hora_asignada']
+                                    'status': 'Asignada a Supervisor', 'fecha_asignada': day_iso, 'hora_asignada': v['hora_asignada']
                                 }).eq('id', v['id']).execute()
                         st.success("¡Planificación confirmada y asignada en el sistema!")
                         for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
                             if key in st.session_state: del st.session_state[key]
                         st.rerun()
-
             with col2:
                 if st.button("📧 Notificar a Coordinadores", use_container_width=True):
                     response = supabase.table('usuarios').select('email').eq('rol', 'coordinador').execute()
@@ -208,8 +201,7 @@ def mostrar_planificador_supervisor():
                             body += "</ul>"
                         body += "<p>El resto de visitas planificadas deben ser realizadas por sus coordinadores. Por favor, revisad la plataforma.</p>"
                         send_email(emails, f"Planificación del Supervisor - Semana del {date.fromisoformat(min(plan.keys())).strftime('%d/%m')}", body)
-                    else:
-                        st.warning("No se encontraron emails de coordinadores para notificar.")
+                    else: st.warning("No se encontraron emails de coordinadores para notificar.")
 
     if "no_asignadas" in st.session_state and st.session_state.no_asignadas:
         with st.container(border=True):
