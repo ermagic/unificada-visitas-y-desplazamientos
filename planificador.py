@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con flujo de envío para Coordinador)
+# Fichero: planificador.py (Versión con flujo de envío y corrección de error)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, date, datetime
@@ -19,7 +19,7 @@ HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v11") # User agent actualizado
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v11")
         geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
         location = geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
@@ -38,7 +38,6 @@ def create_global_map(df, color_map):
             nombre = row['nombre_completo']
             franja = row['franja_horaria'] or ''
             
-            ### MODIFICADO: Usa la fecha asignada si existe para el tooltip
             if pd.notna(row.get('fecha_asignada')):
                 fecha_corta = pd.to_datetime(row['fecha_asignada']).strftime('%d/%m')
                 fecha_popup = pd.to_datetime(row['fecha_asignada']).strftime('%d/%m/%Y')
@@ -80,7 +79,6 @@ def mostrar_planificador():
     colores = ['blue', 'orange', 'purple', 'cadetblue', 'pink', 'lightgreen', 'red', 'gray', 'lightblue', 'darkred']
     color_map = {coordinador: colores[i % len(colores)] for i, coordinador in enumerate(coordinadores)}
 
-    ### MODIFICADO ### Ligeramente cambiados los títulos de las pestañas
     tab_planificar, tab_global, tab_gestion = st.tabs(["✍️ 1. Planificar (Borrador)", "🌍 2. Vista Global (Calendario)", "👀 3. Mis Visitas (Seguimiento)"])
 
     with tab_planificar:
@@ -95,26 +93,31 @@ def mostrar_planificador():
         mis_visitas_res = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).eq('status', 'Propuesta').gte('fecha', start_of_week).lte('fecha', end_of_week).execute()
         df_propuestas_original = pd.DataFrame(mis_visitas_res.data)
         
-        ### MODIFICADO: Corrección del bug de StreamlitAPIException ###
         if not df_propuestas_original.empty: 
             df_propuestas_original['fecha'] = pd.to_datetime(df_propuestas_original['fecha']).dt.date
         
         df_para_editar = df_propuestas_original.reindex(columns=['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones', 'id'])
         
-        # Se asegura de que la columna 'fecha' tenga el tipo correcto incluso si el df está vacío
-        df_para_editar['fecha'] = pd.to_datetime(df_para_editar['fecha']).dt.date
-
         st.markdown("Puedes añadir, editar o eliminar filas. **No olvides guardar los cambios.**")
-        edited_df = st.data_editor(df_para_editar, num_rows="dynamic", column_order=['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones'],
-            column_config={
-                "id": None, "fecha": st.column_config.DateColumn("Fecha", min_value=start_of_week, max_value=end_of_week, required=True),
-                "franja_horaria": st.column_config.SelectboxColumn("Franja Horaria", options=sorted(list(set(HORAS_LUNES_JUEVES + HORAS_VIERNES)))),
-                "direccion_texto": st.column_config.TextColumn("Ubicación", required=True), "equipo": st.column_config.TextColumn("Equipo", required=True),
-                "observaciones": st.column_config.TextColumn("Observaciones")}, key=f"editor_{start_of_week}")
+
+        ### NUEVA CORRECCIÓN: Evitar el editor si no hay datos ###
+        if df_para_editar.empty:
+            st.info("✅ No tienes visitas en estado 'Borrador' para esta semana.")
+            # Creamos un dataframe vacío con las mismas columnas para que el resto del código no falle
+            edited_df = pd.DataFrame(columns=df_para_editar.columns)
+        else:
+            edited_df = st.data_editor(df_para_editar, num_rows="dynamic", column_order=['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones'],
+                column_config={
+                    "id": None, "fecha": st.column_config.DateColumn("Fecha", min_value=start_of_week, max_value=end_of_week, required=True),
+                    "franja_horaria": st.column_config.SelectboxColumn("Franja Horaria", options=sorted(list(set(HORAS_LUNES_JUEVES + HORAS_VIERNES)))),
+                    "direccion_texto": st.column_config.TextColumn("Ubicación", required=True), "equipo": st.column_config.TextColumn("Equipo", required=True),
+                    "observaciones": st.column_config.TextColumn("Observaciones")}, key=f"editor_{start_of_week}")
 
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("💾 Guardar Cambios en Borradores", type="primary", use_container_width=True):
+            # Desactivamos el botón de guardar si no hay nada que editar
+            disable_save = edited_df.empty and df_propuestas_original.empty
+            if st.button("💾 Guardar Cambios en Borradores", type="primary", use_container_width=True, disabled=disable_save):
                 with st.spinner("Guardando..."):
                     original_ids = set(df_propuestas_original['id'].dropna().tolist())
                     current_ids = set(edited_df['id'].dropna().tolist())
@@ -124,27 +127,26 @@ def mostrar_planificador():
                     
                     for _, row in edited_df.iterrows():
                         if pd.isna(row['fecha']) or pd.isna(row['franja_horaria']) or pd.isna(row['direccion_texto']): continue
-                        if row['fecha'].weekday() == 4 and row['franja_horaria'] not in HORAS_VIERNES: st.error(f"La franja '{row['franja_horaria']}' no es válida para un viernes. Fila ignorada."); continue
+                        # La conversión a .date() se hace aquí para asegurar el tipo correcto
+                        fecha_obj = row['fecha'] if isinstance(row['fecha'], date) else row['fecha'].date()
+                        if fecha_obj.weekday() == 4 and row['franja_horaria'] not in HORAS_VIERNES: 
+                            st.error(f"La franja '{row['franja_horaria']}' no es válida para un viernes. Fila ignorada."); continue
                         
                         lat, lon = geocode_address(row['direccion_texto'])
-                        visita_data = {'usuario_id': st.session_state['usuario_id'], 'fecha': str(row['fecha']), 'franja_horaria': row['franja_horaria'], 'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'], 'observaciones': row['observaciones'], 'status': 'Propuesta', 'lat': lat, 'lon': lon}
+                        visita_data = {'usuario_id': st.session_state['usuario_id'], 'fecha': str(fecha_obj), 'franja_horaria': row['franja_horaria'], 'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'], 'observaciones': row['observaciones'], 'status': 'Propuesta', 'lat': lat, 'lon': lon}
                         
                         if pd.notna(row['id']) and row['id'] in original_ids: supabase.table('visitas').update(visita_data).eq('id', int(row['id'])).execute()
                         else: supabase.table('visitas').insert(visita_data).execute()
                     
                     st.success("¡Borradores actualizados!"); st.rerun()
 
-        ### NUEVO: Botón para finalizar y enviar planificación ###
         with col2:
-            if st.button("✅ Enviar Planificación a Supervisor", use_container_width=True):
+            # Desactivamos el botón de enviar si no hay borradores guardados
+            disable_send = df_propuestas_original.empty
+            if st.button("✅ Enviar Planificación a Supervisor", use_container_width=True, disabled=disable_send):
                 with st.spinner("Enviando visitas para asignación..."):
-                    # Buscamos todas las visitas en estado "Propuesta" para el usuario y la semana seleccionada
-                    visitas_a_enviar_res = supabase.table('visitas').select('id').eq('usuario_id', st.session_state['usuario_id']).eq('status', 'Propuesta').gte('fecha', start_of_week).lte('fecha', end_of_week).execute()
-                    visitas_a_enviar_df = pd.DataFrame(visitas_a_enviar_res.data)
-
-                    if not visitas_a_enviar_df.empty:
-                        ids_a_actualizar = visitas_a_enviar_df['id'].tolist()
-                        # Actualizamos el estado de todas estas visitas
+                    ids_a_actualizar = df_propuestas_original['id'].tolist()
+                    if ids_a_actualizar:
                         supabase.table('visitas').update({'status': 'Pendiente de Asignación'}).in_('id', ids_a_actualizar).execute()
                         st.success(f"¡Éxito! {len(ids_a_actualizar)} visitas han sido enviadas para su asignación.")
                         st.rerun()
@@ -163,7 +165,18 @@ def mostrar_planificador():
             start_of_week_cal = selected_date_cal - timedelta(days=selected_date_cal.weekday())
             end_of_week_cal = start_of_week_cal + timedelta(days=6)
             st.info(f"Mostrando visitas para la semana del {start_of_week_cal.strftime('%d/%m/%Y')} al {end_of_week_cal.strftime('%d/%m/%Y')}")
-            df_semana_filtrada = all_visits_df[(all_visits_df['fecha'].dt.date >= start_of_week_cal) & (all_visits_df['fecha'].dt.date <= end_of_week_cal)]
+            
+            # Filtro modificado para incluir visitas asignadas fuera de su semana original
+            df_semana_filtrada_prop = all_visits_df[
+                (all_visits_df['fecha'].dt.date >= start_of_week_cal) & 
+                (all_visits_df['fecha'].dt.date <= end_of_week_cal)
+            ]
+            df_semana_filtrada_asig = all_visits_df[
+                (pd.to_datetime(all_visits_df['fecha_asignada']).dt.date >= start_of_week_cal) & 
+                (pd.to_datetime(all_visits_df['fecha_asignada']).dt.date <= end_of_week_cal)
+            ]
+            df_semana_filtrada = pd.concat([df_semana_filtrada_prop, df_semana_filtrada_asig]).drop_duplicates(subset=['id']).reset_index(drop=True)
+
 
             if not df_semana_filtrada.empty:
                 calendar_events = []
@@ -173,8 +186,7 @@ def mostrar_planificador():
                     
                     if pd.notna(row.get('fecha_asignada')) and pd.notna(row.get('hora_asignada')):
                         start_dt = datetime.combine(pd.to_datetime(row['fecha_asignada']).date(), datetime.strptime(row['hora_asignada'], '%H:%M').time())
-                        # Asumimos 1h de duración para visitas asignadas en el calendario
-                        end_dt = start_dt + timedelta(hours=1) 
+                        end_dt = start_dt + timedelta(hours=1)
                     else:
                         franja = row.get('franja_horaria')
                         if not franja or not isinstance(franja, str): continue
@@ -191,7 +203,6 @@ def mostrar_planificador():
             else: st.warning("No hay visitas planificadas para la semana seleccionada.")
         else: st.warning("No hay ninguna visita planificada en el sistema.")
     
-    ### MODIFICADO: Pestaña de gestión con seguimiento por estado ###
     with tab_gestion:
         st.subheader("Seguimiento de Mis Visitas")
         mis_visitas_res = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).order('fecha, franja_horaria', desc=False).execute()
@@ -201,7 +212,7 @@ def mostrar_planificador():
             df_mis_visitas['fecha'] = pd.to_datetime(df_mis_visitas['fecha']).dt.strftime('%d/%m/%Y')
 
             st.markdown("#### ✅ Asignadas al Supervisor")
-            df_asignadas = df_mis_visitas[df_mis_visitas['status'] == 'Asignada a Supervisor']
+            df_asignadas = df_mis_visitas[df_mis_visitas['status'] == 'Asignada a Supervisor'].copy()
             if not df_asignadas.empty:
                 df_asignadas_show = df_asignadas[['fecha_asignada', 'hora_asignada', 'direccion_texto', 'equipo', 'observaciones']]
                 df_asignadas_show.rename(columns={'fecha_asignada': 'Fecha Final', 'hora_asignada': 'Hora Final'}, inplace=True)
