@@ -66,7 +66,6 @@ def mostrar_planificador():
             df_mapa = df_all.dropna(subset=['lat', 'lon']).copy()
             
             if not df_mapa.empty:
-                # <-- CAMBIO: Lógica de centrado y zoom automático del mapa
                 m = folium.Map()
 
                 coords_counter = {}
@@ -80,7 +79,6 @@ def mostrar_planificador():
                     popup_html = f"<b>Asignado a:</b> {row['Asignado a']}<br><b>Equipo:</b> {row['Equipo']}<br><b>Ubicación:</b> {row['Ubicación']}"
                     folium.Marker([lat, lon], popup=folium.Popup(popup_html, max_width=300), icon=folium.Icon(color=color, icon='briefcase', prefix='fa')).add_to(m)
                 
-                # Le decimos al mapa que se ajuste para mostrar todos los puntos
                 sw = df_mapa[['lat', 'lon']].min().values.tolist()
                 ne = df_mapa[['lat', 'lon']].max().values.tolist()
                 m.fit_bounds([sw, ne])
@@ -94,16 +92,35 @@ def mostrar_planificador():
                 titulo = f"{r['Asignado a']} - {r['Equipo']}"
                 color = 'green' if r['status'] == 'Asignada a Supervisor' else 'blue'
                 
+                # --- INICIO DEL CÓDIGO CORREGIDO ---
+                start, end = None, None  # Inicializar variables
+
                 if pd.notna(r.get('fecha_asignada')) and pd.notna(r.get('hora_asignada')) and r['status'] == 'Asignada a Supervisor':
-                    start = datetime.combine(pd.to_datetime(r['fecha_asignada']).date(), datetime.strptime(r['hora_asignada'], '%H:%M').time())
-                    end = start + timedelta(minutes=45)
+                    # Búsqueda flexible de la hora (HH:MM), ignorando segundos
+                    hora_match = re.search(r'^(\d{2}:\d{2})', str(r['hora_asignada']))
+                    if hora_match:
+                        try:
+                            hora_str = hora_match.group(1)
+                            start_time = datetime.strptime(hora_str, '%H:%M').time()
+                            start_date = pd.to_datetime(r['fecha_asignada']).date()
+                            start = datetime.combine(start_date, start_time)
+                            end = start + timedelta(minutes=45)
+                        except (ValueError, TypeError):
+                            continue # Si hay error en la conversión, se salta este evento
                 else:
                     fecha_evento = pd.to_datetime(r['fecha']).date()
                     horas = re.findall(r'(\d{2}:\d{2})', r['franja_horaria'] or '')
-                    if len(horas) != 2: continue
-                    start = datetime.combine(fecha_evento, datetime.strptime(horas[0], '%H:%M').time())
-                    end = datetime.combine(fecha_evento, datetime.strptime(horas[1], '%H:%M').time())
-                events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color})
+                    if len(horas) == 2:
+                        try:
+                            start = datetime.combine(fecha_evento, datetime.strptime(horas[0], '%H:%M').time())
+                            end = datetime.combine(fecha_evento, datetime.strptime(horas[1], '%H:%M').time())
+                        except ValueError:
+                            continue # Si hay error en la conversión, se salta este evento
+                
+                # Solo se añade el evento si se ha podido generar correctamente
+                if start and end:
+                    events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color})
+                # --- FIN DEL CÓDIGO CORREGIDO ---
                 
             calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat(), "slotMinTime": "08:00:00", "slotMaxTime": "18:00:00"}, key=f"cal_{start_cal}")
 
@@ -119,7 +136,6 @@ def mostrar_planificador():
         response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).execute()
         df = pd.DataFrame(response.data)
 
-        # <-- CAMBIO: Convertimos la columna 'fecha' al tipo de dato correcto ANTES de pasarla al editor
         if not df.empty:
             df['fecha'] = pd.to_datetime(df['fecha']).dt.date
 
