@@ -1,10 +1,11 @@
-# Fichero: app.py (Versión con Roles de Supervisor)
+# Fichero: app.py (Versión con Roles de Supervisor y Stats)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
 from planificador import mostrar_planificador
 from admin import mostrar_panel_admin
-from supervisor import mostrar_planificador_supervisor # <-- NUEVA IMPORTACIÓN
+from supervisor import mostrar_planificador_supervisor
+from stats import mostrar_stats # <-- NUEVA IMPORTACIÓN
 from database import supabase
 
 st.set_page_config(page_title="App Unificada", layout="wide")
@@ -40,10 +41,11 @@ else:
         # --- LÓGICA DE NAVEGACIÓN BASADA EN ROLES (MODIFICADA) ---
         opciones = ["Planificador de Visitas", "Calculadora de Desplazamientos"]
         
-        # El Planificador Automático es para supervisores y administradores
+        # Opciones para supervisores y administradores
         if st.session_state.rol in ['admin', 'supervisor']:
             opciones.append("Planificador Automático")
-        
+            opciones.append("Stats") # <-- NUEVA OPCIÓN EN EL MENÚ
+
         # La gestión de usuarios es solo para administradores
         if st.session_state.rol == 'admin':
             opciones.append("Gestión de Usuarios")
@@ -63,13 +65,20 @@ else:
     elif pagina_seleccionada == "Calculadora de Desplazamientos":
         mostrar_calculadora_avanzada()
     elif pagina_seleccionada == "Planificador Automático":
-        # Control de seguridad adicional
         if st.session_state.rol in ['admin', 'supervisor']:
             mostrar_planificador_supervisor()
         else:
             st.error("No tienes permisos para acceder a esta sección.")
+    
+    # --- INICIO DE LA NUEVA SECCIÓN ---
+    elif pagina_seleccionada == "Stats":
+        if st.session_state.rol in ['admin', 'supervisor']:
+            mostrar_stats() # <-- SE LLAMA A LA NUEVA FUNCIÓN
+        else:
+            st.error("No tienes permisos para acceder a esta sección.")
+    # --- FIN DE LA NUEVA SECCIÓN ---
+
     elif pagina_seleccionada == "Gestión de Usuarios":
-        # Control de seguridad adicional
         if st.session_state.rol == 'admin':
             mostrar_panel_admin()
         else:
