@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con algoritmo mejorado e interfaz interactiva)
+# Fichero: supervisor.py (Versión con manejo de errores de API)
 import streamlit as st
 import pandas as pd
 from database import supabase
@@ -10,7 +10,7 @@ from streamlit_folium import st_folium
 import smtplib
 from email.mime.text import MIMEText
 
-# --- FUNCIÓN PARA ENVIAR EMAILS (sin cambios) ---
+# --- FUNCIÓN PARA ENVIR EMAILS (sin cambios) ---
 def send_email(recipients, subject, body):
     """Envía un correo electrónico usando la configuración de secrets."""
     try:
@@ -29,7 +29,7 @@ def send_email(recipients, subject, body):
         st.error(f"Error al enviar el correo: {e}")
         return False
 
-# --- LÓGICA DEL MOTOR DE PLANIFICACIÓN (MODIFICADA) ---
+# --- LÓGICA DEL MOTOR DE PLANIFICACIÓN ---
 @st.cache_data(ttl=3600)
 def get_distance_matrix(locations):
     """Obtiene la matriz de distancias de Google Maps para una lista de ubicaciones."""
@@ -46,57 +46,83 @@ def find_best_day_route(available_visits_df, all_locations, dist_matrix):
     Encuentra la mejor ruta para un solo día desde un pool de visitas disponibles.
     Devuelve la ruta (lista de dicts), el número de visitas y el tiempo de viaje.
     """
-    time_budget_seconds = 8 * 3600  # Asumimos 8h para encontrar la ruta más densa posible
+    time_budget_seconds = 8 * 3600
     visit_duration_seconds = 45 * 60
-    home_base_address = all_locations[0]
 
     best_route = []
     max_visits = 0
     min_travel_time = float('inf')
+    
+    # ### NUEVO: Contador para rutas no válidas ###
+    invalid_routes_found = 0
 
     if available_visits_df.empty:
-        return best_route, max_visits, min_travel_time
+        return best_route, max_visits, min_travel_time, invalid_routes_found
 
-    # Limita el número de permutaciones para evitar timeouts
-    num_visits_to_permute = min(len(available_visits_df), 6) # Reducido a 6 para mayor estabilidad
+    num_visits_to_permute = min(len(available_visits_df), 6)
 
     for p in itertools.permutations(available_visits_df.index, num_visits_to_permute):
         current_time = 0
         current_travel_time = 0
         current_route = []
+        is_permutation_valid = True
 
+        # ### INICIO DE LA CORRECCIÓN ###
         # Viaje desde casa a la primera visita
         first_visit_loc = available_visits_df.loc[p[0], 'direccion_texto']
         first_loc_index = all_locations.index(first_visit_loc)
-        travel_to_first = dist_matrix['rows'][0]['elements'][first_loc_index]['duration']['value']
+        
+        element_to_first = dist_matrix['rows'][0]['elements'][first_loc_index]
+        if element_to_first['status'] != 'OK':
+            invalid_routes_found += 1
+            continue # Salta a la siguiente permutación si la primera visita es inaccesible
+        
+        travel_to_first = element_to_first['duration']['value']
+        # ### FIN DE LA CORRECCIÓN ###
+
         current_time += travel_to_first
         current_travel_time += travel_to_first
 
         for j in range(len(p)):
-            # Añadir tiempo en el sitio
             current_time += visit_duration_seconds
             
-            # Viaje a la siguiente visita
             if j < len(p) - 1:
                 loc_a = available_visits_df.loc[p[j], 'direccion_texto']
                 loc_b = available_visits_df.loc[p[j+1], 'direccion_texto']
                 idx_a = all_locations.index(loc_a)
                 idx_b = all_locations.index(loc_b)
-                travel_to_next = dist_matrix['rows'][idx_a]['elements'][idx_b]['duration']['value']
+                
+                # ### INICIO DE LA CORRECCIÓN ###
+                element_to_next = dist_matrix['rows'][idx_a]['elements'][idx_b]
+                if element_to_next['status'] != 'OK':
+                    is_permutation_valid = False
+                    invalid_routes_found += 1
+                    break # Rompe el bucle interno, esta ruta no es válida
+                
+                travel_to_next = element_to_next['duration']['value']
+                # ### FIN DE LA CORRECCIÓN ###
+                
                 current_time += travel_to_next
                 current_travel_time += travel_to_next
 
-            # Viaje de vuelta a casa desde la última visita del tour actual
             last_visit_loc = available_visits_df.loc[p[j], 'direccion_texto']
             last_loc_index = all_locations.index(last_visit_loc)
-            travel_from_last = dist_matrix['rows'][last_loc_index]['elements'][0]['duration']['value']
+
+            # ### INICIO DE LA CORRECCIÓN ###
+            element_from_last = dist_matrix['rows'][last_loc_index]['elements'][0]
+            if element_from_last['status'] != 'OK':
+                is_permutation_valid = False
+                invalid_routes_found += 1
+                break # Rompe el bucle interno, no se puede volver a casa desde aquí
+            
+            travel_from_last = element_from_last['duration']['value']
+            # ### FIN DE LA CORRECCIÓN ###
 
             if (current_time + travel_from_last) > time_budget_seconds:
                 break
             
             current_route.append(available_visits_df.loc[p[j]].to_dict())
 
-            # Comprobar si esta ruta es la mejor hasta ahora
             num_current_visits = len(current_route)
             final_travel_time = current_travel_time + travel_from_last
 
@@ -108,8 +134,12 @@ def find_best_day_route(available_visits_df, all_locations, dist_matrix):
                 if final_travel_time < min_travel_time:
                     min_travel_time = final_travel_time
                     best_route = current_route
-    
-    return best_route, max_visits, min_travel_time
+        
+        # Si el bucle interno se rompió por una ruta inválida, saltamos a la siguiente permutación
+        if not is_permutation_valid:
+            continue
+
+    return best_route, max_visits, min_travel_time, invalid_routes_found
 
 def generate_optimal_plan():
     """Función principal que orquesta la creación del plan para Martín."""
@@ -138,16 +168,21 @@ def generate_optimal_plan():
 
         final_plan = []
         available_visits_df = df_visits.copy()
+        total_invalid_routes = 0
 
-        for _ in range(3): # Calcular 3 días óptimos
+        for _ in range(3):
             if available_visits_df.empty: break
             
-            day_route, _, _ = find_best_day_route(available_visits_df, all_locations, dist_matrix)
+            day_route, _, _, invalid_count = find_best_day_route(available_visits_df, all_locations, dist_matrix)
+            total_invalid_routes += invalid_count
             
             if day_route:
                 final_plan.append(day_route)
                 used_ids = [visit['id'] for visit in day_route]
                 available_visits_df = available_visits_df[~available_visits_df['id'].isin(used_ids)]
+        
+        if total_invalid_routes > 0:
+            st.warning(f"ℹ️ Se han descartado algunas rutas porque una o más direcciones podrían ser incorrectas o inaccesibles. Revisa las direcciones si el plan no es el esperado.")
 
         unassigned_visits = available_visits_df.to_dict('records')
         st.success(f"¡Propuesta generada con {len(final_plan)} días planificados!")
@@ -156,17 +191,15 @@ def generate_optimal_plan():
 def move_visit(visit_id, current_day, new_day):
     """Mueve una visita de un día a otro en el session_state."""
     visit_to_move = None
-    # Encontrar y quitar la visita de su ubicación actual
     for i, visit in enumerate(st.session_state.supervisor_plan[current_day]):
         if visit['id'] == visit_id:
             visit_to_move = st.session_state.supervisor_plan[current_day].pop(i)
             break
     
-    # Añadir la visita a su nueva ubicación
     if visit_to_move:
         st.session_state.supervisor_plan[new_day].append(visit_to_move)
 
-# --- INTERFAZ DE STREAMLIT (MODIFICADA) ---
+# --- INTERFAZ DE STREAMLIT ---
 def mostrar_planificador_supervisor():
     st.header("Planificador Automático para Martín 🤖")
 
@@ -195,7 +228,6 @@ def mostrar_planificador_supervisor():
         
         st.subheader("🗓️ Tablero de Planificación Manual")
         
-        # --- Contenedor para asignar fechas ---
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -207,7 +239,6 @@ def mostrar_planificador_supervisor():
 
         st.markdown("---")
 
-        # --- Contenedores para los días y las visitas no asignadas ---
         day_keys = ['day_1', 'day_2', 'day_3']
         cols = st.columns(len(day_keys))
 
@@ -217,11 +248,9 @@ def mostrar_planificador_supervisor():
                 day_name = day_date.strftime('%A').capitalize()
                 st.markdown(f"#### Día {i+1} ({day_name})")
                 
-                # Simular ruta para calcular tiempo total y avisar si es viernes
                 total_seconds = 0
-                # Lógica simplificada para estimar tiempo, la confirmación usa la real
                 if plan_state[day_key]:
-                    total_seconds = len(plan_state[day_key]) * 45 * 60 + (len(plan_state[day_key]) + 1) * 30 * 60 # Estimación gruesa
+                    total_seconds = len(plan_state[day_key]) * 45 * 60 + (len(plan_state[day_key]) + 1) * 30 * 60
                 
                 total_hours = total_seconds / 3600
                 st.info(f"{len(plan_state[day_key])} visitas | Est: {total_hours:.1f}h")
@@ -265,27 +294,41 @@ def mostrar_planificador_supervisor():
 
         st.markdown("---")
 
-        # --- Botones de Confirmación y Notificación ---
         if 'plan_confirmed' not in st.session_state: st.session_state.plan_confirmed = False
 
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Confirmar y Asignar Plan", type="primary", use_container_width=True, disabled=st.session_state.plan_confirmed):
                 with st.spinner("Confirmando y actualizando la base de datos..."):
+                    # Recalculamos la matriz de distancias para las horas exactas
+                    all_final_visits = plan_state['day_1'] + plan_state['day_2'] + plan_state['day_3']
+                    if all_final_visits:
+                        final_locations = [ "Centro de Barcelona, Barcelona" ] + list(pd.DataFrame(all_final_visits)['direccion_texto'].unique())
+                        final_dist_matrix = get_distance_matrix(final_locations)
+                    else:
+                        final_dist_matrix = None
+
                     for i, day_key in enumerate(day_keys):
                         assigned_date = plan_state[f'{day_key}_date']
-                        
-                        # Simulación final para asignar horas
                         current_time_dt = datetime.combine(assigned_date, time(8, 0))
-                        
+                        last_location_idx = 0
+
                         for visit in plan_state[day_key]:
+                            if final_dist_matrix:
+                                current_loc_idx = final_locations.index(visit['direccion_texto'])
+                                travel_element = final_dist_matrix['rows'][last_location_idx]['elements'][current_loc_idx]
+                                if travel_element['status'] == 'OK':
+                                    current_time_dt += timedelta(seconds=travel_element['duration']['value'])
+                            
                             supabase.table('visitas').update({
                                 'status': 'Asignada a Supervisor',
                                 'fecha_asignada': str(assigned_date),
                                 'hora_asignada': current_time_dt.strftime('%H:%M')
                             }).eq('id', visit['id']).execute()
-                            # Avanza el tiempo para la siguiente visita (45min visita + 30min viaje estimado)
-                            current_time_dt += timedelta(minutes=75) 
+                            
+                            current_time_dt += timedelta(minutes=45)
+                            if final_dist_matrix:
+                                last_location_idx = final_locations.index(visit['direccion_texto'])
 
                     st.session_state.plan_confirmed = True
                     st.success("¡Plan confirmado y asignado en la base de datos!")
@@ -300,14 +343,16 @@ def mostrar_planificador_supervisor():
                     if not all_emails:
                         st.error("No se encontraron correos de coordinadores para notificar.")
                     else:
+
                         body = "<h3>Resumen de visitas asignadas a Martín</h3><p>¡Hola equipo! Martín se encargará de las siguientes visitas:</p>"
                         for i, day_key in enumerate(day_keys):
                              day_date = plan_state[f'{day_key}_date']
                              day_str = day_date.strftime('%A, %d/%m/%Y').capitalize()
-                             body += f"<h4>{day_str}:</h4><ul>"
-                             for visit in plan_state[day_key]:
-                                 body += f"<li>{visit['direccion_texto']} (propuesto por {visit['nombre_coordinador']})</li>"
-                             body += "</ul>"
+                             if plan_state[day_key]:
+                                 body += f"<h4>{day_str}:</h4><ul>"
+                                 for visit in plan_state[day_key]:
+                                     body += f"<li>{visit['direccion_texto']} (propuesto por {visit['nombre_coordinador']})</li>"
+                                 body += "</ul>"
                         body += "<p>Saludos,<br>Sistema de Planificación</p>"
 
                         send_email(all_emails, f"Planificación de Martín - Semana del {plan_state['day_1_date'].strftime('%d/%m')}", body)
