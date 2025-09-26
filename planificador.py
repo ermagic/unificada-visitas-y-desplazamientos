@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión 2 - Planificación Semanal)
+# Fichero: planificador.py (Versión 2.1 - Corregido)
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date
@@ -65,14 +65,17 @@ def mostrar_planificador():
             
             df_propuestas = pd.DataFrame(mis_visitas_propuestas_res.data)
 
+            # --- LÍNEA AÑADIDA PARA LA CORRECCIÓN ---
+            # Nos aseguramos de que la columna 'fecha' tenga el tipo de dato correcto
+            if not df_propuestas.empty:
+                df_propuestas['fecha'] = pd.to_datetime(df_propuestas['fecha']).dt.date
+
             # Usamos st.data_editor para una experiencia de edición tipo Excel
             st.write("Añade o edita tus visitas para la próxima semana. Haz clic en el '+' para añadir nuevas filas.")
             
-            # --- NOVEDAD: Usamos un DataFrame en blanco si no hay datos ---
             if df_propuestas.empty:
                 df_para_editar = pd.DataFrame(columns=['fecha', 'direccion_texto', 'observaciones'])
             else:
-                # Nos aseguramos de que las columnas que queremos editar existan
                 df_para_editar = df_propuestas[['fecha', 'direccion_texto', 'observaciones']]
 
             edited_df = st.data_editor(
@@ -105,7 +108,7 @@ def mostrar_planificador():
                     # Insertamos las nuevas visitas del editor
                     nuevas_visitas = []
                     for index, row in edited_df.iterrows():
-                        if row['direccion_texto'] and row['fecha']: # Solo guardar si tiene datos básicos
+                        if pd.notna(row['direccion_texto']) and pd.notna(row['fecha']): # Solo guardar si tiene datos básicos
                              nuevas_visitas.append({
                                 'usuario_id': st.session_state['usuario_id'],
                                 'direccion_texto': row['direccion_texto'],
@@ -143,7 +146,6 @@ def mostrar_planificador():
             all_visits_df.drop(columns=['usuarios'], inplace=True)
 
             for _, row in all_visits_df.iterrows():
-                # --- NOVEDAD: Colores según el estado de la visita ---
                 color = "gray" # Default
                 if row['status'] == 'Propuesta':
                     color = "blue"
@@ -152,12 +154,11 @@ def mostrar_planificador():
                 elif row['status'] == 'Cancelada':
                     color = "red"
                 
-                # --- NOVEDAD: Icono para las visitas de Martín ---
                 title = f"{row['nombre_completo']} - {row['direccion_texto']}"
-                if row['nombre_completo'] == "Martín": # Asumiendo que el nombre de Martín en la BD es "Martín"
+                if row['nombre_completo'] == "Martín": 
                     title = f"👮 {title}"
 
-                start_time, end_time = map_franja_to_time(row['fecha'], "Jornada Mañana (8-14h)") # Se puede ajustar si se usa hora exacta
+                start_time, end_time = map_franja_to_time(row['fecha'], "Jornada Mañana (8-14h)")
                 
                 calendar_events.append({
                     "title": title,
@@ -177,7 +178,6 @@ def mostrar_planificador():
     with tab_gestion:
         st.subheader("Resumen de Mis Próximas Visitas")
         
-        # Leemos todas las visitas futuras del usuario, sin importar el estado
         my_visits_res = supabase.table('visitas').select('*').eq(
             'usuario_id', st.session_state['usuario_id']
         ).gte('fecha', date.today().isoformat()).execute()
@@ -189,19 +189,16 @@ def mostrar_planificador():
         else:
             for _, visit in my_visits_df.iterrows():
                 with st.container(border=True):
-                    # --- NOVEDAD: Lógica para mostrar visitas reasignadas ---
                     if visit['status'] == 'Asignada a Supervisor':
                         st.warning(f"Visita a **{visit['direccion_texto']}** reasignada a Martín.", icon="👮")
-                        nueva_fecha = datetime.fromisoformat(visit['fecha_asignada']).strftime('%d/%m/%Y') if visit.get('fecha_asignada') else "N/A"
-                        nueva_hora = visit.get('hora_asignada', "N/A")
+                        nueva_fecha = pd.to_datetime(visit['fecha_asignada']).strftime('%d/%m/%Y') if pd.notna(visit.get('fecha_asignada')) else "N/A"
+                        nueva_hora = visit.get('hora_asignada', "N/A") if pd.notna(visit.get('hora_asignada')) else "N/A"
                         st.markdown(f"**Nueva Fecha y Hora:** {nueva_fecha} a las {nueva_hora}")
                         st.caption("Esta visita ha sido bloqueada y no requiere acción por tu parte.")
 
                     elif visit['status'] == 'Propuesta':
-                        fecha_formateada = datetime.fromisoformat(visit['fecha']).strftime('%d/%m/%Y')
+                        fecha_formateada = pd.to_datetime(visit['fecha']).strftime('%d/%m/%Y')
                         st.info(f"**{fecha_formateada}** - Visita propuesta a **{visit['direccion_texto']}**", icon="✍️")
-                        if visit.get('observaciones'):
+                        if pd.notna(visit.get('observaciones')):
                             st.caption(f"Observaciones: {visit['observaciones']}")
                         st.caption("Esta visita está pendiente de la planificación final del supervisor.")
-                    
-                    # Aquí se podrían añadir otros estados como 'Confirmada', etc.
