@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con flujo simplificado y UI limpia)
+# Fichero: planificador.py (Versión con BUG Corregido en mapa y tabla de visitas)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -12,13 +12,13 @@ from streamlit_calendar import calendar
 # --- CONSTANTES ---
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
-STATUS_COLORS = {'Asignada a Supervisor': 'green', 'Propuesta': 'gray'} # Asignada a Supervisor es el estado de Martín
+STATUS_COLORS = {'Asignada a Supervisor': 'green', 'Propuesta': 'gray'}
 
 @st.cache_data(ttl=60*60*24)
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v16")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v17")
         location = geolocator.geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
         return None, None
@@ -28,13 +28,11 @@ def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
     if not supabase: st.error("Sin conexión a base de datos."); st.stop()
 
-    # <-- CAMBIO: Pestañas reordenadas según tu petición.
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", "✍️ Planificar Mis Visitas"])
 
     with tab_global:
         st.subheader("Panel de Control de Visitas de la Semana")
         
-        # <-- CAMBIO: El selector de fecha empieza en la próxima semana.
         today = date.today()
         start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
         cal_date = st.date_input("Ver semana", value=start_of_next_week, format="DD/MM/YYYY", key="cal_date")
@@ -47,39 +45,41 @@ def mostrar_planificador():
         if df_all.empty:
             st.info("Sin visitas programadas para esta semana.")
         else:
-            # Preparamos los datos para la visualización
             df_all['Coordinador'] = df_all['usuario'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'Desconocido')
-            df_all.rename(columns={'equipo': 'Equipo', 'direccion_texto': 'Ubicación'}, inplace=True)
+            df_all.rename(columns={'equipo': 'Equipo', 'direccion_texto': 'Ubicación', 'observaciones': 'Observaciones'}, inplace=True)
             
-            # <-- CAMBIO: Lógica de asignación para mostrar "Martín / Coordinador"
             def get_assignee(row):
                 if row['status'] == 'Asignada a Supervisor':
                     return f"Martín / {row['Coordinador']}"
                 return row['Coordinador']
             df_all['Asignado a'] = df_all.apply(get_assignee, axis=1)
 
+            # <-- CAMBIO: Lógica de la tabla de visitas corregida
             st.markdown("#### Tabla de Visitas")
-            df_display = df_all[['Asignado a', 'Equipo', 'Ubicación', 'fecha', 'franja_horaria', 'fecha_asignada', 'hora_asignada']]
+            df_all['Fecha Visita'] = pd.to_datetime(df_all['fecha_asignada'].fillna(df_all['fecha'])).dt.strftime('%d/%m/%Y')
+            df_all['Hora Visita'] = df_all['hora_asignada'].fillna(df_all['franja_horaria'])
+
+            df_display = df_all[['Asignado a', 'Equipo', 'Ubicación', 'Fecha Visita', 'Hora Visita', 'Observaciones']]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
             st.markdown("---")
             st.subheader("🗺️ Mapa y 🗓️ Calendario de la Semana")
             df_mapa = df_all.dropna(subset=['lat', 'lon']).copy()
             
-            # <-- CAMBIO: Lógica para evitar solapamiento de pines en el mapa
             if not df_mapa.empty:
                 map_center = [df_mapa['lat'].mean(), df_mapa['lon'].mean()]
                 m = folium.Map(location=map_center, zoom_start=10)
                 
-                coords = {}
+                # <-- CAMBIO: Lógica de solapamiento de pines corregida (Anti-KeyError)
+                coords_counter = {}
                 for _, row in df_mapa.iterrows():
-                    lat, lon = row['lat'], row['lon']
-                    if (lat, lon) in coords:
-                        coords[(lat, lon)] += 1
-                        lat += 0.0001 * coords[(lat, lon)] # Pequeño ajuste
-                        lon += 0.0001 * coords[(lat, lon)]
-                    else:
-                        coords[(lat, lon)] = 0
+                    original_coords = (row['lat'], row['lon'])
+                    offset_count = coords_counter.get(original_coords, 0)
+                    
+                    lat = row['lat'] + 0.0001 * offset_count
+                    lon = row['lon'] + 0.0001 * offset_count
+                    
+                    coords_counter[original_coords] = offset_count + 1
 
                     color = 'green' if row['status'] == 'Asignada a Supervisor' else 'blue'
                     popup_html = f"<b>Asignado a:</b> {row['Asignado a']}<br><b>Equipo:</b> {row['Equipo']}<br><b>Ubicación:</b> {row['Ubicación']}"
@@ -94,7 +94,6 @@ def mostrar_planificador():
                 titulo = f"{r['Asignado a']} - {r['Equipo']}"
                 color = 'green' if r['status'] == 'Asignada a Supervisor' else 'blue'
                 
-                # <-- CAMBIO: El calendario muestra la fecha/hora de Martín si existe
                 if pd.notna(r.get('fecha_asignada')) and pd.notna(r.get('hora_asignada')) and r['status'] == 'Asignada a Supervisor':
                     start = datetime.combine(pd.to_datetime(r['fecha_asignada']).date(), datetime.strptime(r['hora_asignada'], '%H:%M').time())
                     end = start + timedelta(minutes=45)
@@ -111,28 +110,18 @@ def mostrar_planificador():
     with tab_planificar:
         st.subheader("Añade o Edita Tus Visitas")
         
-        # <-- CAMBIO: El selector de fecha empieza en la próxima semana.
         today_plan = date.today()
         start_of_next_week_plan = today_plan + timedelta(days=-today_plan.weekday(), weeks=1)
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
         
         start, end = selected_date - timedelta(days=selected_date.weekday()), selected_date + timedelta(days=6-selected_date.weekday())
         
-        # Obtenemos todas las visitas del coordinador
         response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).execute()
         df = pd.DataFrame(response.data)
 
-        # <-- CAMBIO: Editor de datos simplificado según tu captura.
         column_config = {
-            "id": None, # Ocultamos el ID
-            "usuario_id": None,
-            "lat": None,
-            "lon": None,
-            "created_at": None,
-            "status": None,
-            "id_visita_original": None,
-            "fecha_asignada": None,
-            "hora_asignada": None,
+            "id": None, "usuario_id": None, "lat": None, "lon": None, "created_at": None, "status": None,
+            "id_visita_original": None, "fecha_asignada": None, "hora_asignada": None,
             "fecha": st.column_config.DateColumn("Fecha", min_value=start, max_value=end, required=True, format="DD/MM/YYYY"),
             "franja_horaria": st.column_config.SelectboxColumn("Franja", options=sorted(set(HORAS_LUNES_JUEVES + HORAS_VIERNES)), required=True),
             "direccion_texto": st.column_config.TextColumn("Ubicación", required=True),
@@ -141,39 +130,26 @@ def mostrar_planificador():
         }
         
         edited_df = st.data_editor(
-            df, 
-            column_config=column_config,
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_{start}"
+            df, column_config=column_config, num_rows="dynamic", use_container_width=True, key=f"editor_{start}"
         )
 
         if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
             with st.spinner("Guardando..."):
                 for _, row in edited_df.iterrows():
-                    # Validamos datos esenciales
-                    if pd.isna(row['fecha']) or pd.isna(row['direccion_texto']) or pd.isna(row['equipo']):
-                        continue
+                    if pd.isna(row['fecha']) or pd.isna(row['direccion_texto']) or pd.isna(row['equipo']): continue
                     
                     lat, lon = geocode_address(row['direccion_texto'])
                     
                     data_to_upsert = {
-                        'fecha': str(row['fecha']),
-                        'franja_horaria': row['franja_horaria'],
-                        'direccion_texto': row['direccion_texto'],
-                        'equipo': row['equipo'],
-                        'observaciones': str(row.get('observaciones') or ''),
-                        'lat': lat,
-                        'lon': lon,
-                        'usuario_id': st.session_state['usuario_id'],
-                        'status': 'Propuesta' # Estado por defecto
+                        'fecha': str(row['fecha']), 'franja_horaria': row['franja_horaria'],
+                        'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'],
+                        'observaciones': str(row.get('observaciones') or ''), 'lat': lat, 'lon': lon,
+                        'usuario_id': st.session_state['usuario_id'], 'status': 'Propuesta'
                     }
                     
                     if pd.notna(row['id']) and row['id'] != '':
-                        # Es una fila existente, la actualizamos
                         supabase.table('visitas').update(data_to_upsert).eq('id', int(row['id'])).execute()
                     else:
-                        # Es una fila nueva, la insertamos
                         supabase.table('visitas').insert(data_to_upsert).execute()
 
             st.success("¡Visitas guardadas correctamente!")

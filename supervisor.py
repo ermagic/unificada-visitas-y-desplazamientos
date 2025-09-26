@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con nuevo flujo de asignación y jitter en mapa)
+# Fichero: supervisor.py (Versión con BUG Corregido en mapa)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -38,8 +38,6 @@ def generar_planificacion_automatica():
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     end_of_next_week = start_of_next_week + timedelta(days=4)
 
-    # <-- CAMBIO: El algoritmo ahora busca todas las visitas 'Propuesta' (el estado por defecto)
-    # que no hayan sido ya asignadas a Martín.
     response = supabase.table('visitas').select('*, usuarios(nombre_completo)').eq('status', 'Propuesta').gte('fecha', start_of_next_week).lte('fecha', end_of_next_week).execute()
     visitas_df = pd.DataFrame(response.data)
     
@@ -144,21 +142,21 @@ def mostrar_planificador_supervisor():
                     if location: folium.Marker([location.latitude, location.longitude], popup="Punto de Salida/Llegada", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
                 except Exception: pass
                 
-                # <-- CAMBIO: Lógica de Jitter para evitar solapamiento de pines
-                coords = {}
+                # <-- CAMBIO: Lógica de solapamiento de pines corregida (Anti-KeyError)
+                coords_counter = {}
                 day_colors = ['blue', 'red', 'purple', 'orange', 'darkgreen']
                 for i, (day_iso, visitas) in enumerate(st.session_state.plan_con_horas.items()):
                     day = date.fromisoformat(day_iso)
                     color, points = day_colors[i % len(day_colors)], []
                     for visit_idx, visit in enumerate(visitas):
                         if pd.notna(visit.get('lat')) and pd.notna(visit.get('lon')):
-                            lat, lon = visit['lat'], visit['lon']
-                            if (lat, lon) in coords:
-                                coords[(lat, lon)] += 1
-                                lat += 0.0001 * coords[(lat, lon)]
-                                lon += 0.0001 * coords[(lat, lon)]
-                            else:
-                                coords[(lat, lon)] = 0
+                            original_coords = (visit['lat'], visit['lon'])
+                            offset_count = coords_counter.get(original_coords, 0)
+                            
+                            lat = visit['lat'] + 0.0001 * offset_count
+                            lon = visit['lon'] + 0.0001 * offset_count
+                            
+                            coords_counter[original_coords] = offset_count + 1
 
                             points.append((lat, lon))
                             popup_html = f"<b>{day.strftime('%A')} - Visita {visit_idx + 1}</b><br><b>Hora:</b> {visit['hora_asignada']}h<br><b>Equipo:</b> {visit['equipo']}<br><b>Dirección:</b> {visit['direccion_texto']}"
@@ -180,7 +178,6 @@ def mostrar_planificador_supervisor():
                                 'hora_asignada': v['hora_asignada']
                             }
                             supabase.table('visitas').update(update_data).eq('id', v['id']).execute()
-                    # <-- CAMBIO: Ya no hacemos nada con las visitas 'no_asignadas', simplemente se quedan como están.
                 st.success("¡Planificación confirmada y asignada en el sistema!")
                 for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
                     if key in st.session_state: del st.session_state[key]
