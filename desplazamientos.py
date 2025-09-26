@@ -1,4 +1,4 @@
-# Fichero: desplazamientos.py (Versión Final con corrección de LÍMITE DE FILAS)
+# Fichero: desplazamientos.py (Versión Final con corrección de ValueError)
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -23,7 +23,6 @@ def inicializar_estado_calculadora():
 def cargar_datos_tiempos():
     """Carga los datos de tiempos desde la tabla 'tiempos' de Supabase."""
     try:
-        # --- LÍNEA CORREGIDA: Añadimos .limit(3000) para traer más de 1000 filas ---
         response = supabase.table('tiempos').select('*').limit(3000).execute()
         df = pd.DataFrame(response.data)
         
@@ -31,7 +30,6 @@ def cargar_datos_tiempos():
             st.warning("La tabla 'tiempos' de Supabase no devolvió datos.")
             return None
 
-        # Usamos los nombres de columna exactos de tu base de datos
         required_cols = [
             'Poblacion_WFI', 'Centro de Trabajo Nuevo', 'Provincia Centro de Trabajo', 
             'Distancia en Kms', 'Tiempo(Min)', 'Tiempo a cargo de empresa(Min)'
@@ -43,7 +41,6 @@ def cargar_datos_tiempos():
             st.write("Columnas encontradas:", df.columns.tolist())
             return None
         
-        # Renombramos las columnas para que el resto del código funcione
         column_mapping = {
             'Poblacion_WFI': 'poblacion',
             'Centro de Trabajo Nuevo': 'centro_trabajo',
@@ -71,7 +68,6 @@ def cargar_datos_tiempos():
 def cargar_datos_empleados():
     """Carga los datos de empleados activos desde la tabla 'empleados' de Supabase."""
     try:
-        # Asumiendo que la tabla de empleados es más pequeña, pero podemos añadir un límite si es necesario
         response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').limit(1000).execute()
         df = pd.DataFrame(response.data)
 
@@ -151,14 +147,6 @@ def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
     df_tiempos = cargar_datos_tiempos()
 
-    # (Puedes borrar el código de diagnóstico si ya no lo necesitas)
-    if df_tiempos is not None:
-        with st.expander("🔍 DATOS CARGADOS DESDE SUPABASE (PARA DEPURACIÓN)"):
-            st.write("Provincias únicas encontradas en la columna `provincia_ct`:")
-            st.code(sorted(df_tiempos['provincia_ct'].unique()))
-            st.write("Filas de la tabla donde la población contiene 'Barcelona':")
-            st.dataframe(df_tiempos[df_tiempos['poblacion'].str.contains("Barcelona", case=False)])
-
     def _cargo(minutos): return max(0, int(minutos) - 30)
 
     tab1, tab2 = st.tabs(["Cálculo oficial (desde Base de Datos)", "Cálculo informativo (con Google Maps)"])
@@ -224,7 +212,8 @@ def pagina_calculadora():
         centros_map, lista_provincias_ct = {}, ["(Escribir dirección manual)"]
         if df_tiempos is not None:
             centros_df = df_tiempos[['provincia_ct', 'centro_trabajo']].drop_duplicates(subset=['provincia_ct'])
-            centros_map = pd.Series(centros_df.centro_trabajo.values, index=df_tiempos.provincia_ct).to_dict()
+            # --- LÍNEA CORREGIDA ---
+            centros_map = pd.Series(centros_df.centro_trabajo.values, index=centros_df.provincia_ct).to_dict()
             lista_provincias_ct.extend(sorted(centros_map.keys()))
 
         def update_field_from_select(field_key, select_key):
