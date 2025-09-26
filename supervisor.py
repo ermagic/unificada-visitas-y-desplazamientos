@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión final con rediseño visual profesional)
+# Fichero: supervisor.py (Versión con formato de indentación corregido)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -40,15 +40,15 @@ def generar_planificacion_automatica():
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     end_of_next_week = start_of_next_week + timedelta(days=4)
 
-    st.info(f"Buscando visitas de coordinadores para la semana del {start_of_next_week.strftime('%d/%m/%Y')}.")
+    st.info(f"Buscando visitas disponibles para la semana del {start_of_next_week.strftime('%d/%m/%Y')}.")
     response = supabase.table('visitas').select('*, usuarios(nombre_completo)').neq('status', 'Asignada a Supervisor').gte('fecha', start_of_next_week).lte('fecha', end_of_next_week).execute()
     visitas_df = pd.DataFrame(response.data)
 
+    st.info(f"Se encontraron {len(visitas_df)} visitas disponibles para planificar.")
     if visitas_df.empty:
         st.warning("No hay visitas de coordinadores disponibles para planificar la próxima semana.")
         return None, None
 
-    st.info(f"Se encontraron {len(visitas_df)} visitas. Calculando la ruta óptima...")
     visitas_df['nombre_coordinador'] = visitas_df['usuarios'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'N/A')
     visitas_pendientes = visitas_df.to_dict('records')
 
@@ -74,7 +74,8 @@ def generar_planificacion_automatica():
     for dia_laboral in dias_disponibles:
         presupuesto_tiempo_dia = get_daily_time_budget(dia_laboral.weekday())
         visitas_disponibles_hoy = [v for v in visitas_pendientes if v['id'] not in visitas_ya_planificadas_ids]
-        if not visitas_disponibles_hoy: break
+        if not visitas_disponibles_hoy:
+            break
 
         mejor_ruta_del_dia, mejor_puntuacion = [], (-1, float('inf'))
         for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
@@ -89,7 +90,8 @@ def generar_planificacion_automatica():
                         puntuacion_actual = (len(orden), tiempo_total)
                         if puntuacion_actual[0] > mejor_puntuacion[0] or (puntuacion_actual[0] == mejor_puntuacion[0] and puntuacion_actual[1] < mejor_puntuacion[1]):
                             mejor_puntuacion, mejor_ruta_del_dia = puntuacion_actual, list(orden)
-            if mejor_ruta_del_dia: break
+            if mejor_ruta_del_dia:
+                break
 
         if mejor_ruta_del_dia:
             plan_final[dia_laboral.isoformat()] = mejor_ruta_del_dia
@@ -101,9 +103,9 @@ def generar_planificacion_automatica():
 
 # --- INTERFAZ DE STREAMLIT ---
 def mostrar_planificador_supervisor():
-    st.header("🤖 Planificador Automático del Supervisor", divider="blue")
+    st.header("Planificador de Martín (Supervisor) 🤖")
 
-    if st.button("🚀 Generar Planificación Óptima para la Próxima Semana", type="primary", use_container_width=True):
+    if st.button("🤖 Generar planificación óptima", type="primary", use_container_width=True):
         with st.spinner("🧠 Analizando todas las visitas y calculando las mejores rutas..."):
             st.session_state.supervisor_plan, st.session_state.no_asignadas = generar_planificacion_automatica()
             if 'plan_con_horas' in st.session_state:
@@ -130,119 +132,142 @@ def mostrar_planificador_supervisor():
                     origen = v['direccion_texto']
                 plan_con_horas[day_iso] = visitas_con_hora
             st.session_state.plan_con_horas = plan_con_horas
-        
-        with st.container(border=True):
-            st.subheader("🗓️ Propuesta de Planificación Semanal")
-            tab_plan, tab_mapa = st.tabs(["Vista de Agenda", "Vista en Mapa"])
-            with tab_plan:
-                for day_iso, visitas in st.session_state.plan_con_horas.items():
+
+        tab_plan, tab_mapa = st.tabs(["📅 Propuesta de Planificación", "🗺️ Vista en Mapa"])
+        with tab_plan:
+            for day_iso, visitas in st.session_state.plan_con_horas.items():
+                day = date.fromisoformat(day_iso)
+                nombre_dia = day.strftime('%A, %d de %B').capitalize()
+                with st.expander(f"**{nombre_dia}** ({len(visitas)} visitas)", expanded=True):
+                    for v in visitas:
+                        st.markdown(f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}*)")
+
+        with tab_mapa:
+            df_visitas = pd.DataFrame([visit for day_visits in plan.values() for visit in day_visits]).dropna(subset=['lat', 'lon'])
+            if df_visitas.empty:
+                st.warning("No hay visitas con coordenadas para mostrar en el mapa.")
+            else:
+                map_center = [df_visitas['lat'].mean(), df_visitas['lon'].mean()]
+                m = folium.Map(location=map_center, zoom_start=11)
+
+                try:
+                    location = Nominatim(user_agent="supervisor_map_v8").geocode(PUNTO_INICIO_MARTIN)
+                    if location:
+                        folium.Marker([location.latitude, location.longitude], popup="Punto de Salida", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
+                except Exception:
+                    pass
+
+                day_colors = ['blue', 'red', 'purple', 'orange', 'darkgreen']
+                for i, (day_iso, visitas) in enumerate(st.session_state.plan_con_horas.items()):
                     day = date.fromisoformat(day_iso)
-                    nombre_dia = day.strftime('%A, %d de %B').capitalize()
-                    with st.expander(f"**{nombre_dia}** ({len(visitas)} visitas)", expanded=True):
+                    color = day_colors[i % len(day_colors)]
+                    points = []
+                    for visit_idx, visit in enumerate(visitas):
+                        if pd.notna(visit.get('lat')) and pd.notna(visit.get('lon')):
+                            points.append((visit['lat'], visit['lon']))
+                            popup_html = f"<b>{day.strftime('%A')} - Visita {visit_idx + 1}</b><br><b>Hora:</b> {visit['hora_asignada']}h<br><b>Equipo:</b> {visit['equipo']}<br><b>Dirección:</b> {visit['direccion_texto']}"
+                            DivIcon_html = f'<div style="font-family: sans-serif; color: {color}; font-size: 18px; font-weight: bold; text-shadow: -1px 0 white, 0 1px white, 1px 0 white, 0 -1px white;">{visit_idx + 1}</div>'
+                            folium.Marker([visit['lat'], visit['lon']], popup=folium.Popup(popup_html, max_width=300), icon=DivIcon(icon_size=(150, 36), icon_anchor=(7, 20), html=DivIcon_html)).add_to(m)
+
+                    if len(points) > 1:
+                        folium.PolyLine(points, color=color, weight=2.5, opacity=0.8).add_to(m)
+
+                if not df_visitas.empty:
+                    sw = df_visitas[['lat', 'lon']].min().values.tolist()
+                    ne = df_visitas[['lat', 'lon']].max().values.tolist()
+                    m.fit_bounds([sw, ne])
+
+                st_folium(m, use_container_width=True, height=500)
+
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Confirmar y Asignar", use_container_width=True, type="primary"):
+                with st.spinner("Actualizando base de datos..."):
+                    for day_iso, visitas in st.session_state.plan_con_horas.items():
                         for v in visitas:
-                            st.markdown(f"**{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}*)")
+                            update_data = {
+                                'status': 'Asignada a Supervisor',
+                                'fecha_asignada': day_iso,
+                                'hora_asignada': v['hora_asignada']
+                            }
+                            supabase.table('visitas').update(update_data).eq('id', v['id']).execute()
+                    st.success("¡Planificación confirmada y asignada en el sistema!")
+                    for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    st.rerun()
 
-            with tab_mapa:
-                df_visitas = pd.DataFrame([visit for day_visits in plan.values() for visit in day_visits]).dropna(subset=['lat', 'lon'])
-                if df_visitas.empty:
-                    st.warning("No hay visitas con coordenadas para mostrar en el mapa.")
-                else:
-                    map_center = [df_visitas['lat'].mean(), df_visitas['lon'].mean()]
-                    m = folium.Map(location=map_center, zoom_start=11)
-                    try:
-                        location = Nominatim(user_agent="supervisor_map_v9").geocode(PUNTO_INICIO_MARTIN)
-                        if location:
-                            folium.Marker([location.latitude, location.longitude], popup="Punto de Salida", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
-                    except Exception: pass
-
-                    day_colors = ['blue', 'red', 'purple', 'orange', 'darkgreen']
-                    for i, (day_iso, visitas) in enumerate(st.session_state.plan_con_horas.items()):
+        with col2:
+            if st.button("📧 Notificar a Coordinadores", use_container_width=True):
+                response = supabase.table('usuarios').select('email').eq('rol', 'coordinador').execute()
+                emails = [u['email'] for u in response.data if u['email']]
+                if emails:
+                    body = "<h3>Resumen de la Planificación del Supervisor</h3><p>Hola equipo, a continuación se detallan las visitas que asumirá el supervisor la próxima semana:</p>"
+                    for day_iso, visitas in st.session_state.plan_con_horas.items():
                         day = date.fromisoformat(day_iso)
-                        color = day_colors[i % len(day_colors)]
-                        points = []
-                        for visit_idx, visit in enumerate(visitas):
-                            if pd.notna(visit.get('lat')) and pd.notna(visit.get('lon')):
-                                points.append((visit['lat'], visit['lon']))
-                                popup_html = f"<b>{day.strftime('%A')} - Visita {visit_idx + 1}</b><br><b>Hora:</b> {visit['hora_asignada']}h<br><b>Equipo:</b> {visit['equipo']}<br><b>Dirección:</b> {visit['direccion_texto']}"
-                                DivIcon_html = f'<div style="font-family: sans-serif; color: {color}; font-size: 18px; font-weight: bold; text-shadow: -1px 0 white, 0 1px white, 1px 0 white, 0 -1px white;">{visit_idx + 1}</div>'
-                                folium.Marker([visit['lat'], visit['lon']], popup=folium.Popup(popup_html, max_width=300), icon=DivIcon(icon_size=(150, 36), icon_anchor=(7, 20), html=DivIcon_html)).add_to(m)
-                        if len(points) > 1:
-                            folium.PolyLine(points, color=color, weight=2.5, opacity=0.8).add_to(m)
-                    if not df_visitas.empty:
-                        m.fit_bounds([df_visitas[['lat', 'lon']].min().values.tolist(), df_visitas[['lat', 'lon']].max().values.tolist()])
-                    st_folium(m, use_container_width=True, height=500)
-
-            st.divider()
-            st.markdown("##### Acciones sobre la Planificación")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ Confirmar y Asignar Plan", use_container_width=True, type="primary"):
-                    with st.spinner("Actualizando base de datos..."):
-                        for day_iso, visitas in st.session_state.plan_con_horas.items():
-                            for v in visitas:
-                                supabase.table('visitas').update({
-                                    'status': 'Asignada a Supervisor', 'fecha_asignada': day_iso, 'hora_asignada': v['hora_asignada']
-                                }).eq('id', v['id']).execute()
-                        st.success("¡Planificación confirmada y asignada en el sistema!")
-                        for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
-                            if key in st.session_state: del st.session_state[key]
-                        st.rerun()
-            with col2:
-                if st.button("📧 Notificar a Coordinadores", use_container_width=True):
-                    response = supabase.table('usuarios').select('email').eq('rol', 'coordinador').execute()
-                    emails = [u['email'] for u in response.data if u['email']]
-                    if emails:
-                        body = "<h3>Resumen de la Planificación del Supervisor</h3><p>Hola equipo, a continuación se detallan las visitas que asumirá el supervisor la próxima semana:</p>"
-                        for day_iso, visitas in st.session_state.plan_con_horas.items():
-                            day = date.fromisoformat(day_iso)
-                            body += f"<h4>{day.strftime('%A, %d/%m/%Y').capitalize()}</h4><ul>"
-                            for v in visitas:
-                                body += f"<li><b>{v['hora_asignada']}h</b>: {v['direccion_texto']} (Equipo: {v['equipo']}) - <i>Propuesta por {v['nombre_coordinador']}</i></li>"
-                            body += "</ul>"
-                        body += "<p>El resto de visitas planificadas deben ser realizadas por sus coordinadores. Por favor, revisad la plataforma.</p>"
-                        send_email(emails, f"Planificación del Supervisor - Semana del {date.fromisoformat(min(plan.keys())).strftime('%d/%m')}", body)
-                    else: st.warning("No se encontraron emails de coordinadores para notificar.")
+                        body += f"<h4>{day.strftime('%A, %d/%m/%Y').capitalize()}</h4><ul>"
+                        for v in visitas:
+                            body += f"<li><b>{v['hora_asignada']}h</b>: {v['direccion_texto']} (Equipo: {v['equipo']}) - <i>Propuesta por {v['nombre_coordinador']}</i></li>"
+                        body += "</ul>"
+                    body += "<p>El resto de visitas planificadas deben ser realizadas por sus coordinadores correspondientes. Por favor, revisad la plataforma.</p>"
+                    send_email(emails, f"Planificación del Supervisor - Semana del {date.fromisoformat(min(plan.keys())).strftime('%d/%m')}", body)
+                else:
+                    st.warning("No se encontraron emails de coordinadores para notificar.")
 
     if "no_asignadas" in st.session_state and st.session_state.no_asignadas:
-        with st.container(border=True):
-            st.warning("Visitas no incluidas en el plan (siguen a cargo de sus coordinadores):")
-            for v in st.session_state.no_asignadas:
-                st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']}) - *Propuesto por: {v['nombre_coordinador']}*")
+        st.warning("Visitas que no se incluyeron en el plan de Martín (siguen a cargo de sus coordinadores):")
+        for v in st.session_state.no_asignadas:
+            st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']}) - *Propuesto por: {v['nombre_coordinador']}*")
 
-    with st.expander("➕ Gestión Manual de Visitas del Supervisor"):
-        st.subheader("Opción 1: Añadir una visita existente (de las no incluidas)")
+    with st.expander("➕ Añadir/Crear visita manual para Martín"):
+        st.subheader("Opción 1: Añadir una visita existente (de las no incluidas en el plan)")
+
         if "no_asignadas" in st.session_state and st.session_state.no_asignadas:
-            opciones = {f"{v['direccion_texto']} ({v['equipo']})": v['id'] for v in st.session_state.no_asignadas}
-            visita_sel = st.selectbox("Selecciona una visita para añadirla a tu plan:", options=opciones.keys())
-            col1, col2 = st.columns(2)
-            nueva_fecha = col1.date_input("Asignar al día:", key="manual_date")
-            nueva_hora = col2.time_input("Asignar a la hora:", key="manual_time")
+            visitas_restantes = st.session_state.no_asignadas
+            opciones_visitas = {f"{v['direccion_texto']} (Equipo: {v['equipo']}, Propuesta por: {v['nombre_coordinador']})": v['id'] for v in visitas_restantes}
+            visita_seleccionada_str = st.selectbox("Selecciona una visita para añadirla a tu plan:", options=opciones_visitas.keys())
+            col_manual1, col_manual2 = st.columns(2)
+            with col_manual1:
+                nueva_fecha = st.date_input("Asignar al día:", key="manual_date")
+            with col_manual2:
+                nueva_hora = st.time_input("Asignar a la hora:", key="manual_time")
+
             if st.button("Añadir Visita Seleccionada"):
-                supabase.table('visitas').update({
-                    'status': 'Asignada a Supervisor', 'fecha_asignada': str(nueva_fecha), 'hora_asignada': nueva_hora.strftime('%H:%M')
-                }).eq('id', opciones[visita_sel]).execute()
-                st.success(f"Visita '{visita_sel}' añadida a tu plan.")
+                visita_id = opciones_visitas[visita_seleccionada_str]
+                update_data = {
+                    'status': 'Asignada a Supervisor',
+                    'fecha_asignada': str(nueva_fecha),
+                    'hora_asignada': nueva_hora.strftime('%H:%M')
+                }
+                supabase.table('visitas').update(update_data).eq('id', visita_id).execute()
+                st.success(f"Visita a '{visita_seleccionada_str}' añadida a tu plan.")
                 for key in ['supervisor_plan', 'no_asignadas', 'plan_con_horas']:
-                    if key in st.session_state: del st.session_state[key]
+                    if key in st.session_state:
+                        del st.session_state[key]
                 st.rerun()
         else:
             st.info("Para añadir una visita existente, primero genera una planificación óptima.")
-        
-        st.divider()
+
+        st.markdown("---")
         st.subheader("Opción 2: Crear una visita nueva desde cero")
         with st.form("manual_visit_form"):
-            col1, col2 = st.columns(2)
-            fecha = col1.date_input("Fecha")
-            hora = col2.time_input("Hora")
-            direccion = st.text_input("Dirección Completa")
-            equipo = st.text_input("Equipo/Tarea")
+            fecha = st.date_input("Fecha")
+            hora = st.time_input("Hora")
+            direccion = st.text_input("Dirección")
+            equipo = st.text_input("Equipo")
             observaciones = st.text_area("Observaciones")
             if st.form_submit_button("Crear y Añadir Visita Nueva"):
                 supabase.table('visitas').insert({
-                    'usuario_id': st.session_state['usuario_id'], 'fecha': str(fecha), 'status': 'Asignada a Supervisor',
+                    'usuario_id': st.session_state['usuario_id'],
+                    'fecha': str(fecha),
                     'franja_horaria': f"{hora.strftime('%H:%M')}-{(datetime.combine(date.today(), hora) + timedelta(minutes=45)).time().strftime('%H:%M')}",
-                    'direccion_texto': direccion, 'equipo': equipo, 'observaciones': observaciones,
-                    'fecha_asignada': str(fecha), 'hora_asignada': hora.strftime('%H:%M')
+                    'direccion_texto': direccion,
+                    'equipo': equipo,
+                    'observaciones': observaciones,
+                    'status': 'Asignada a Supervisor',
+                    'fecha_asignada': str(fecha),
+                    'hora_asignada': hora.strftime('%H:%M')
                 }).execute()
                 st.success("Visita manual creada y añadida correctamente.")
                 st.rerun()
