@@ -1,4 +1,4 @@
-# Fichero: desplazamientos.py (Versión Final con Nombres de Columna Corregidos)
+# Fichero: desplazamientos.py (Versión con Código de Diagnóstico)
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -8,7 +8,7 @@ import math
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from database import supabase # <-- IMPORTANTE: Importamos el cliente de Supabase
+from database import supabase
 
 # --- INICIALIZACIÓN DE ESTADO (para este módulo) ---
 def inicializar_estado_calculadora():
@@ -30,7 +30,7 @@ def cargar_datos_tiempos():
             st.warning("La tabla 'tiempos' de Supabase no devolvió datos.")
             return None
 
-        # --- CAMBIO IMPORTANTE: Usamos los nombres de columna EXACTOS de tu base de datos ---
+        # Usamos los nombres de columna exactos de tu base de datos
         required_cols = [
             'Poblacion_WFI', 'Centro de Trabajo Nuevo', 'Provincia Centro de Trabajo', 
             'Distancia en Kms', 'Tiempo(Min)', 'Tiempo a cargo de empresa(Min)'
@@ -42,7 +42,7 @@ def cargar_datos_tiempos():
             st.write("Columnas encontradas:", df.columns.tolist())
             return None
         
-        # --- CAMBIO IMPORTANTE: Renombramos las columnas para que el resto del código funcione ---
+        # Renombramos las columnas para que el resto del código funcione
         column_mapping = {
             'Poblacion_WFI': 'poblacion',
             'Centro de Trabajo Nuevo': 'centro_trabajo',
@@ -53,7 +53,6 @@ def cargar_datos_tiempos():
         }
         df.rename(columns=column_mapping, inplace=True)
         
-        # El resto del procesamiento usa los nombres ya renombrados y sencillos
         df_clean = df.dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
@@ -149,6 +148,18 @@ def send_email(recipients, subject, body):
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
     df_tiempos = cargar_datos_tiempos()
+
+    # --- INICIO DEL CÓDIGO DE DIAGNÓSTICO TEMPORAL ---
+    if df_tiempos is not None:
+        with st.expander("🔍 DATOS CARGADOS DESDE SUPABASE (PARA DEPURACIÓN)"):
+            st.write("Provincias únicas encontradas en la columna `provincia_ct`:")
+            # Mostramos las provincias tal y como las lee el programa
+            st.code(sorted(df_tiempos['provincia_ct'].unique()))
+            
+            st.write("Filas de la tabla donde la población contiene 'Barcelona':")
+            # Buscamos la fila de Barcelona y mostramos sus datos para compararlos
+            st.dataframe(df_tiempos[df_tiempos['poblacion'].str.contains("Barcelona", case=False)])
+    # --- FIN DEL CÓDIGO DE DIAGNÓSTICO ---
 
     def _cargo(minutos): return max(0, int(minutos) - 30)
 
