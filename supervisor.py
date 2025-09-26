@@ -1,17 +1,15 @@
-# Fichero: supervisor.py (Versión corregida con algoritmo funcional, días al azar, sin desplazamiento inicial)
+# Fichero: supervisor.py (Versión completa y funcional para Martín)
 import streamlit as st
 import pandas as pd
-from database import supabase
 from datetime import date, timedelta, datetime, time
 import googlemaps
 import itertools
-import folium
-from streamlit_calendar import calendar
 import smtplib
 from email.mime.text import MIMEText
 import random
+from database import supabase
 
-# --- FUNCIÓN PARA ENVIAR EMAILS ---
+# --- EMAIL ---
 def send_email(recipients, subject, body):
     try:
         smtp_cfg = st.secrets["smtp"]
@@ -29,19 +27,18 @@ def send_email(recipients, subject, body):
         st.error(f"Error al enviar correo: {e}")
         return False
 
-# --- CONFIGURACIÓN DE HORARIOS ---
+# --- HORARIOS ---
 def get_daily_time_budget(weekday):
     if weekday == 4:  # Viernes
         return 7 * 3600  # 7 horas
     else:
         return 8 * 3600  # 8 horas
 
-# --- ALGORITMO DE OPTIMIZACIÓN ---
+# --- ALGORITMO ---
 def generar_planificacion_automatica():
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     weekdays = [start_of_next_week + timedelta(days=i) for i in range(5)]
-    selected_days = sorted(random.sample(weekdays, 3))
 
     response = supabase.table('visitas').select('*, usuarios(nombre_completo)').eq('status', 'Pendiente de Asignación').execute()
     visitas = pd.DataFrame(response.data)
@@ -52,7 +49,6 @@ def generar_planificacion_automatica():
     visitas['fecha'] = pd.to_datetime(visitas['fecha']).dt.date
     visitas['nombre_coordinador'] = visitas['usuarios'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'N/A')
 
-    # Matriz de distancias
     ubicaciones = list(visitas['direccion_texto'].unique())
     try:
         gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
@@ -61,11 +57,16 @@ def generar_planificacion_automatica():
         st.error(f"Error al conectar con Google Maps: {e}")
         return None, None
 
+    random.shuffle(weekdays)
     plan = {}
-    no_asignadas = []
+    usadas = set()
 
-    for day in selected_days:
-        dia_visitas = visitas[visitas['fecha'] == day]
+    for day in weekdays[:3]:  # Máximo 3 días
+        dia_visitas = visitas[visitas['fecha'] == day].copy()
+        dia_visitas = dia_visitas[~dia_visitas['id'].isin(usadas)]
+        if dia_visitas.empty:
+            continue
+
         mejor_ruta = []
         mejor_tiempo = 0
         mejor_cantidad = 0
@@ -73,44 +74,46 @@ def generar_planificacion_automatica():
         for cantidad in range(min(8, len(dia_visitas)), 0, -1):
             for combo in itertools.combinations(dia_visitas.index, cantidad):
                 for orden in itertools.permutations(combo):
-                    tiempo_total = 0
-                    ruta_actual = []
+                    tiempo = 0
+                    ruta = []
                     valida = True
 
                     for i, idx in enumerate(orden):
                         visita = dia_visitas.loc[idx]
-                        ruta_actual.append(visita.to_dict())
+                        ruta.append(visita.to_dict())
 
                         if i > 0:
                             origen = dia_visitas.loc[orden[i - 1]]['direccion_texto']
                             destino = visita['direccion_texto']
                             origen_idx = ubicaciones.index(origen)
                             destino_idx = ubicaciones.index(destino)
-                            tiempo_viaje = matrix['rows'][origen_idx]['elements'][destino_idx]['duration']['value']
-                            tiempo_total += tiempo_viaje
+                            tiempo += matrix['rows'][origen_idx]['elements'][destino_idx]['duration']['value']
 
-                        tiempo_total += 45 * 60  # 45 minutos por visita
+                        tiempo += 45 * 60  # Visita
 
-                        if tiempo_total > get_daily_time_budget(day.weekday()):
+                        if tiempo > get_daily_time_budget(day.weekday()):
                             valida = False
                             break
 
-                    if valida and len(ruta_actual) > mejor_cantidad:
-                        mejor_ruta = ruta_actual
-                        mejor_cantidad = len(ruta_actual)
-                        mejor_tiempo = tiempo_total
+                    if valida and len(ruta) > mejor_cantidad:
+                        mejor_ruta = ruta
+                        mejor_cantidad = len(ruta)
+                        mejor_tiempo = tiempo
 
-            if mejor_ruta:
-                break
+                if mejor_ruta:
+                    break
 
         if mejor_ruta:
             plan[day] = mejor_ruta
-        else:
-            no_asignadas.extend(dia_visitas.to_dict('records'))
+            usadas.update([v['id'] for v in mejor_ruta])
 
+        if len(usadas) >= len(visitas):
+            break  # ✅ No hace falta más días
+
+    no_asignadas = visitas[~visitas['id'].isin(usadas)].to_dict('records')
     return plan, no_asignadas
 
-# --- INTERFAZ DE MARTÍN ---
+# --- INTERFAZ ---
 def mostrar_planificador_supervisor():
     st.header("Planificador de Martín (Supervisor) 🤖")
 

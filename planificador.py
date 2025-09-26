@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con visión clara de visitas asumidas por Martín)
+# Fichero: planificador.py (Versión completa y estable para coordinadores)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -40,16 +40,20 @@ def mostrar_planificador():
 
         response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).eq('status', 'Propuesta').gte('fecha', start).lte('fecha', end).execute()
         df = pd.DataFrame(response.data)
-        if not df.empty:
-            df['fecha'] = pd.to_datetime(df['fecha']).dt.date
+
+        if df.empty:
+            df = pd.DataFrame(columns=['id', 'fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones'])
+
+        df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce').dt.date
+        df['id'] = pd.to_numeric(df['id'], errors='coerce')
 
         edited = st.data_editor(
-            df.reindex(columns=['fecha', 'franja_horaria', 'direccion_texto', 'equipo', 'observaciones', 'id']),
+            df,
             num_rows="dynamic",
             column_config={
                 "id": None,
                 "fecha": st.column_config.DateColumn("Fecha", min_value=start, max_value=end, required=True),
-                "franja_horaria": st.column_config.SelectboxColumn("Franja", options=list(set(HORAS_LUNES_JUEVES + HORAS_VIERNES))),
+                "franja_horaria": st.column_config.SelectboxColumn("Franja", options=sorted(set(HORAS_LUNES_JUEVES + HORAS_VIERNES))),
                 "direccion_texto": st.column_config.TextColumn("Ubicación", required=True),
                 "equipo": st.column_config.TextColumn("Equipo", required=True),
                 "observaciones": st.column_config.TextColumn("Observaciones")
@@ -83,7 +87,7 @@ def mostrar_planificador():
 
         with col2:
             if st.button("✅ Enviar a supervisor", disabled=edited.empty):
-                ids = df['id'].dropna().tolist()
+                ids = edited['id'].dropna().tolist()
                 if ids:
                     supabase.table('visitas').update({'status': 'Pendiente de Asignación'}).in_('id', ids).execute()
                     st.success("Visitas enviadas."); st.rerun()
@@ -135,7 +139,6 @@ def mostrar_planificador():
         else:
             df_mis['fecha'] = pd.to_datetime(df_mis['fecha']).dt.strftime('%d/%m/%Y')
 
-            # Visitas asignadas a Martín
             asignadas = df_mis[df_mis['status'] == 'Asignada a Supervisor']
             if not asignadas.empty:
                 st.markdown("#### ✅ Asignadas a Martín (Supervisor)")
@@ -145,7 +148,6 @@ def mostrar_planificador():
             else:
                 st.info("Ninguna visita asignada a Martín.")
 
-            # Pendientes de asignar
             pendientes = df_mis[df_mis['status'] == 'Pendiente de Asignación']
             if not pendientes.empty:
                 st.markdown("#### ⏳ Pendientes de asignar")
@@ -153,7 +155,6 @@ def mostrar_planificador():
             else:
                 st.info("No tienes visitas pendientes de asignar.")
 
-            # Borradores
             borradores = df_mis[df_mis['status'] == 'Propuesta']
             if not borradores.empty:
                 st.markdown("#### ✍️ Tus borradores")
