@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con formulario por población y corrección RLS explicada)
+# Fichero: planificador.py (Versión con todas las mejoras integradas)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -13,7 +13,9 @@ from streamlit_calendar import calendar
 # --- CONSTANTES ---
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
+CATALONIA_CENTER = [41.8795, 1.7887] # Punto para centrar el mapa
 
+# --- FUNCIONES AUXILIARES ---
 def get_initials(full_name: str) -> str:
     if not full_name or not isinstance(full_name, str): return "??"
     parts = full_name.split()
@@ -32,103 +34,91 @@ def geocode_address(address: str):
         return None, None
     except Exception: return None, None
 
+# --- FUNCIÓN PRINCIPAL DEL MÓDULO ---
 def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
-    if not supabase: st.error("Sin conexión a base de datos."); st.stop()
-
     rol_usuario = st.session_state.get('rol', 'coordinador')
     planificar_tab_title = "✍️ Gestionar Visitas" if rol_usuario in ['supervisor', 'admin'] else "✍️ Planificar Mis Visitas"
-
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", planificar_tab_title])
 
     with tab_global:
-        # ... (código sin cambios) ...
         st.subheader("Panel de Control de Visitas de la Semana")
-        
         today = date.today()
         start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
         cal_date = st.date_input("Ver semana", value=start_of_next_week, format="DD/MM/YYYY", key="cal_date")
         
+        ver_solo_mis_visitas = False
+        if rol_usuario == 'coordinador':
+            ver_solo_mis_visitas = st.checkbox("Ver solo mis visitas")
+        
         start_cal, end_cal = cal_date - timedelta(days=cal_date.weekday()), cal_date + timedelta(days=6-cal_date.weekday())
-
-        response = supabase.table('visitas').select('*, usuario:usuario_id(nombre_completo)').gte('fecha', start_cal).lte('fecha', end_cal).execute()
+        response = supabase.table('visitas').select('*, usuario:usuario_id(nombre_completo, id)').gte('fecha', start_cal).lte('fecha', end_cal).execute()
         df_all = pd.DataFrame(response.data)
         
         if df_all.empty:
             st.info("Sin visitas programadas para esta semana.")
         else:
+            df_all['usuario_id'] = df_all['usuario'].apply(lambda x: x['id'] if isinstance(x, dict) else None)
             df_all['Coordinador'] = df_all['usuario'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'Desconocido')
-            df_all.rename(columns={'equipo': 'Equipo', 'direccion_texto': 'Ubicación', 'observaciones': 'Observaciones'}, inplace=True)
             
+            if ver_solo_mis_visitas:
+                df_all = df_all[df_all['usuario_id'] == st.session_state['usuario_id']].copy()
+
+            coordinadores_en_vista = sorted([c for c in df_all['Coordinador'].unique() if c != 'Desconocido'])
+            colores_base = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+            color_map = {coord: colores_base[i % len(colores_base)] for i, coord in enumerate(coordinadores_en_vista)}
+            color_map['Desconocido'] = '#808080'
+            
+            df_all.rename(columns={'equipo': 'Equipo', 'direccion_texto': 'Ubicación', 'observaciones': 'Observaciones'}, inplace=True)
             def get_assignee(row):
-                if row['status'] == 'Asignada a Supervisor':
-                    return f"Martín / {row['Coordinador']}"
+                if row['status'] == 'Asignada a Supervisor': return f"Martín / {row['Coordinador']}"
                 return row['Coordinador']
             df_all['Asignado a'] = df_all.apply(get_assignee, axis=1)
 
             st.markdown("#### Tabla de Visitas")
-            df_all['Fecha Visita'] = pd.to_datetime(df_all['fecha_asignada'].fillna(df_all['fecha'])).dt.strftime('%d/%m/%Y')
-            df_all['Hora Visita'] = df_all['hora_asignada'].fillna(df_all['franja_horaria'])
-
-            df_display = df_all[['Asignado a', 'Equipo', 'Ubicación', 'Fecha Visita', 'Hora Visita', 'Observaciones']]
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_all[['Asignado a', 'Equipo', 'Ubicación', 'fecha', 'franja_horaria', 'Observaciones']], use_container_width=True, hide_index=True)
 
             st.markdown("---")
             st.subheader("🗺️ Mapa y 🗓️ Calendario de la Semana")
             df_mapa = df_all.dropna(subset=['lat', 'lon']).copy()
-            
-            if not df_mapa.empty:
-                m = folium.Map()
-                coords_counter = {}
-                for _, row in df_mapa.iterrows():
-                    original_coords = (row['lat'], row['lon'])
-                    offset_count = coords_counter.get(original_coords, 0)
-                    lat, lon = row['lat'] + 0.0001 * offset_count, row['lon'] + 0.0001 * offset_count
-                    coords_counter[original_coords] = offset_count + 1
+            m = folium.Map(location=CATALONIA_CENTER, zoom_start=8)
 
+            if not df_mapa.empty:
+                for _, row in df_mapa.iterrows():
                     popup_html = f"<b>Asignado a:</b> {row['Asignado a']}<br><b>Equipo:</b> {row['Equipo']}<br><b>Ubicación:</b> {row['Ubicación']}"
-                    
                     if row['status'] == 'Asignada a Supervisor':
                         icon = folium.Icon(color='darkpurple', icon='user-secret', prefix='fa')
                     else:
+                        bg_color = color_map.get(row['Coordinador'], '#808080')
                         initials = get_initials(row['Coordinador'])
-                        icon_html = f'<div style="font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; color: white; background-color: #0078A8; border-radius: 50%; width: 25px; height: 25px; text-align: center; line-height: 25px; border: 1px solid white;">{initials}</div>'
+                        icon_html = f'<div style="font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; color: white; background-color: {bg_color}; border-radius: 50%; width: 25px; height: 25px; text-align: center; line-height: 25px; border: 1px solid white;">{initials}</div>'
                         icon = DivIcon(html=icon_html)
-                    
-                    folium.Marker([lat, lon], popup=folium.Popup(popup_html, max_width=300), icon=icon).add_to(m)
+                    folium.Marker([row['lat'], row['lon']], popup=folium.Popup(popup_html, max_width=300), icon=icon).add_to(m)
                 
-                sw, ne = df_mapa[['lat', 'lon']].min().values.tolist(), df_mapa[['lat', 'lon']].max().values.tolist()
-                m.fit_bounds([sw, ne])
-                st_folium(m, use_container_width=True, height=500)
-            else: 
-                st.info("No hay visitas con coordenadas para mostrar en el mapa.")
+                sw = df_mapa[['lat', 'lon']].min().values.tolist()
+                ne = df_mapa[['lat', 'lon']].max().values.tolist()
+                if sw == ne:
+                    m.location = sw
+                    m.zoom_start = 13
+                else:
+                    m.fit_bounds([sw, ne])
+            st_folium(m, use_container_width=True, height=500)
             
             events = []
             for _, r in df_all.iterrows():
                 titulo = f"{r['Asignado a']} - {r['Equipo']}"
-                color = 'darkpurple' if r['status'] == 'Asignada a Supervisor' else 'lightblue'
-                start, end = None, None
-                if pd.notna(r.get('fecha_asignada')) and pd.notna(r.get('hora_asignada')) and r['status'] == 'Asignada a Supervisor':
-                    hora_match = re.search(r'^(\d{2}:\d{2})', str(r['hora_asignada']))
-                    if hora_match:
-                        try:
-                            start = datetime.combine(pd.to_datetime(r['fecha_asignada']).date(), datetime.strptime(hora_match.group(1), '%H:%M').time())
-                            end = start + timedelta(minutes=45)
-                        except (ValueError, TypeError): continue
-                else:
-                    horas = re.findall(r'(\d{2}:\d{2})', r['franja_horaria'] or '')
-                    if len(horas) == 2:
-                        try:
-                            fecha_evento = pd.to_datetime(r['fecha']).date()
-                            start = datetime.combine(fecha_evento, datetime.strptime(horas[0], '%H:%M').time())
-                            end = datetime.combine(fecha_evento, datetime.strptime(horas[1], '%H:%M').time())
-                        except ValueError: continue
-                if start and end:
-                    events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color, "textColor": "white"})
+                color = 'darkpurple' if r['status'] == 'Asignada a Supervisor' else color_map.get(r['Coordinador'], '#808080')
+                horas = re.findall(r'(\d{2}:\d{2})', r['franja_horaria'] or '')
+                if len(horas) == 2:
+                    try:
+                        fecha_evento = pd.to_datetime(r['fecha']).date()
+                        start = datetime.combine(fecha_evento, datetime.strptime(horas[0], '%H:%M').time())
+                        end = datetime.combine(fecha_evento, datetime.strptime(horas[1], '%H:%M').time())
+                        events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color, "textColor": "white"})
+                    except ValueError: continue
             
             calendar_css = ".fc-event-title { font-size: 0.8em !important; line-height: 1.2 !important; white-space: normal !important; padding: 2px !important; }"
-            
-            calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat(), "slotMinTime": "08:00:00", "slotMaxTime": "18:00:00"}, custom_css=calendar_css, key=f"cal_{start_cal}")
+            calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat()}, custom_css=calendar_css, key=f"cal_{start_cal}")
 
     with tab_planificar:
         today_plan = date.today()
@@ -138,134 +128,54 @@ def mostrar_planificador():
 
         with st.expander("➕ Añadir Nueva Visita"):
             with st.form("new_visit_form", clear_on_submit=True):
-                st.write("Completa los datos para crear una nueva propuesta de visita.")
-                
                 col1, col2 = st.columns(2)
                 with col1:
                     new_fecha = st.date_input("Fecha", min_value=start, max_value=end)
-                    # --- CORRECCIÓN: Cambiado de Dirección a Población ---
                     new_poblacion = st.text_input("Población", placeholder="Ej: Cornellà de Llobregat")
                 with col2:
                     franjas_disponibles = HORAS_VIERNES if new_fecha and new_fecha.weekday() == 4 else HORAS_LUNES_JUEVES
                     new_franja = st.selectbox("Franja Horaria", options=sorted(set(franjas_disponibles)))
                     new_equipo = st.text_input("Equipo", placeholder="Ej: FB45")
-                
                 new_observaciones = st.text_area("Observaciones (opcional)")
-
-                submitted = st.form_submit_button("Añadir Visita", type="primary", use_container_width=True)
-                if submitted:
-                    # --- CORRECCIÓN: Usar la variable new_poblacion ---
-                    if not new_poblacion or not new_equipo:
-                        st.warning("Por favor, completa la población y el equipo.")
-                    else:
-                        with st.spinner("Geocodificando y guardando..."):
-                            lat, lon = geocode_address(new_poblacion)
-                            if lat is None:
-                                st.error("No se pudo encontrar la población. Revisa que el nombre sea correcto.")
-                            else:
-                                new_visit_data = {
-                                    'usuario_id': st.session_state['usuario_id'],
-                                    'fecha': str(new_fecha),
-                                    'franja_horaria': new_franja,
-                                    'direccion_texto': new_poblacion, # Guardamos la población en este campo
-                                    'equipo': new_equipo,
-                                    'observaciones': new_observaciones,
-                                    'lat': lat,
-                                    'lon': lon,
-                                    'status': 'Propuesta'
-                                }
-                                try:
-                                    supabase.table('visitas').insert(new_visit_data).execute()
-                                    st.success(f"¡Visita a '{new_poblacion}' añadida con éxito!")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error al guardar la visita: {e}")
+                if st.form_submit_button("Añadir Visita", type="primary", use_container_width=True):
+                    if new_poblacion and new_equipo:
+                        lat, lon = geocode_address(new_poblacion)
+                        if lat:
+                            supabase.table('visitas').insert({
+                                'usuario_id': st.session_state['usuario_id'], 'fecha': str(new_fecha), 'franja_horaria': new_franja,
+                                'direccion_texto': new_poblacion, 'equipo': new_equipo, 'observaciones': new_observaciones,
+                                'lat': lat, 'lon': lon, 'status': 'Propuesta'
+                            }).execute()
+                            st.success(f"¡Visita a '{new_poblacion}' añadida!")
+                            st.rerun()
+                        else: st.error("No se pudo encontrar la población.")
+                    else: st.warning("La población y el equipo son obligatorios.")
         st.markdown("---")
         
-        # ... (resto del código sin cambios) ...
-        st.subheader("Edita o Elimina Tus Visitas Existentes")
-        if rol_usuario in ['supervisor', 'admin']:
-            assigned_res = supabase.table('visitas').select('*').eq('status', 'Asignada a Supervisor').gte('fecha_asignada', start).lte('fecha_asignada', end).execute()
-            own_res = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).execute()
-            df_assigned = pd.DataFrame(assigned_res.data)
-            df_own = pd.DataFrame(own_res.data)
-            df = pd.concat([df_assigned, df_own]).drop_duplicates(subset=['id'], keep='first').reset_index(drop=True)
+        st.subheader("Tus Visitas Propuestas para esta Semana")
+        response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).order('fecha').execute()
+        visitas_semana = response.data
+        ayuda_ya_solicitada = any(v.get('ayuda_solicitada') for v in visitas_semana)
+
+        if not visitas_semana:
+            st.info("No tienes visitas propuestas para la semana seleccionada.")
         else:
-            response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).execute()
-            df = pd.DataFrame(response.data)
-        
-        if not df.empty:
-            for col in ['fecha', 'fecha_asignada']:
-                if col in df.columns: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
-
-        if rol_usuario in ['supervisor', 'admin']:
-            column_config = {
-                "id": None, "usuario_id": None, "lat": None, "lon": None, "created_at": None, "id_visita_original": None,
-                "fecha": st.column_config.DateColumn("Fecha Propuesta", format="DD/MM/YYYY"),
-                "franja_horaria": st.column_config.SelectboxColumn("Franja Propuesta", options=sorted(set(HORAS_LUNES_JUEVES + HORAS_VIERNES))),
-                "direccion_texto": st.column_config.TextColumn("Ubicación", required=True, width="medium"),
-                "equipo": st.column_config.TextColumn("Equipo", required=True),
-                "observaciones": st.column_config.TextColumn("Observaciones"),
-                "status": st.column_config.SelectboxColumn("Estado", options=['Propuesta', 'Asignada a Supervisor'], required=True),
-                "fecha_asignada": st.column_config.DateColumn("Fecha Asignada", format="DD/MM/YYYY"),
-                "hora_asignada": st.column_config.TextColumn("Hora Asignada (HH:MM)"),
-            }
-        else:
-            column_config = {
-                "id": None, "usuario_id": None, "lat": None, "lon": None, "created_at": None, "status": None,
-                "id_visita_original": None, "fecha_asignada": None, "hora_asignada": None,
-                "fecha": st.column_config.DateColumn("Fecha", min_value=start, max_value=end, required=True, format="DD/MM/YYYY"),
-                "franja_horaria": st.column_config.SelectboxColumn("Franja", options=sorted(set(HORAS_LUNES_JUEVES + HORAS_VIERNES)), required=True),
-                "direccion_texto": st.column_config.TextColumn("Ubicación", required=True),
-                "equipo": st.column_config.TextColumn("Equipo", required=True),
-                "observaciones": st.column_config.TextColumn("Observaciones")
-            }
-        
-        edited_df = st.data_editor(
-            df, column_config=column_config, num_rows="dynamic", use_container_width=True, key=f"editor_{start}"
-        )
-
-        if st.button("💾 Guardar Cambios en la Tabla", type="secondary", use_container_width=True):
-            with st.spinner("Guardando..."):
-                original_ids = set(df['id'].dropna())
-                edited_ids = set(edited_df['id'].dropna())
-                ids_to_delete = original_ids - edited_ids
-
-                for visit_id in ids_to_delete:
-                    try:
-                        supabase.table('visitas').delete().eq('id', int(visit_id)).execute()
-                        st.toast(f"Visita {visit_id} eliminada.")
-                    except Exception as e:
-                        st.error(f"Error eliminando visita {visit_id}: {e}")
-
-                for _, row in edited_df.iterrows():
-                    if pd.isna(row.get('direccion_texto')) or pd.isna(row.get('equipo')): continue
-                    
-                    lat, lon = geocode_address(row['direccion_texto'])
-                    
-                    data_to_upsert = {
-                        'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'],
-                        'observaciones': str(row.get('observaciones') or ''), 'lat': lat, 'lon': lon,
-                    }
-
-                    if rol_usuario in ['supervisor', 'admin']:
-                        data_to_upsert['status'] = row.get('status', 'Propuesta')
-                        data_to_upsert['fecha_asignada'] = str(row['fecha_asignada']) if pd.notna(row.get('fecha_asignada')) else None
-                        data_to_upsert['hora_asignada'] = row['hora_asignada'] if pd.notna(row.get('hora_asignada')) else None
-                        data_to_upsert['fecha'] = str(row['fecha']) if pd.notna(row.get('fecha')) else None
-                        data_to_upsert['franja_horaria'] = row['franja_horaria'] if pd.notna(row.get('franja_horaria')) else None
-                    else:
-                        data_to_upsert['status'] = 'Propuesta'
-                        data_to_upsert['fecha'] = str(row['fecha']) if pd.notna(row.get('fecha')) else None
-                        data_to_upsert['franja_horaria'] = row['franja_horaria'] if pd.notna(row.get('franja_horaria')) else None
-
-                    if pd.isna(row.get('id')) or row['id'] == '':
-                        data_to_upsert['usuario_id'] = st.session_state['usuario_id']
-
-                    if pd.notna(row.get('id')) and row['id'] != '':
-                        supabase.table('visitas').update(data_to_upsert).eq('id', int(row['id'])).execute()
-                    else:
-                        supabase.table('visitas').insert(data_to_upsert).execute()
-
-            st.success("¡Cambios guardados correctamente!")
-            st.rerun()
+            st.success("Puedes solicitar la ayuda de Martín para **una visita por semana**. Será considerada de forma **prioritaria**.")
+            for visita in visitas_semana:
+                with st.container(border=True):
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    with col1:
+                        st.markdown(f"**📍 {visita['direccion_texto']}**")
+                        st.write(f"**🗓️ {visita['fecha']}** | 🕒 {visita['franja_horaria']}")
+                    with col2:
+                        st.write(f"**Equipo:** {visita['equipo']}")
+                        st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
+                    with col3:
+                        if visita.get('ayuda_solicitada'):
+                            if st.button("✔️ Ayuda Solicitada", key=f"cancel_{visita['id']}", type="primary", use_container_width=True, help="Cancelar la solicitud"):
+                                supabase.table('visitas').update({'ayuda_solicitada': False}).eq('id', visita['id']).execute()
+                                st.rerun()
+                        else:
+                            if st.button("🙋 Pedir Ayuda", key=f"ask_{visita['id']}", use_container_width=True, disabled=ayuda_ya_solicitada):
+                                supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute()
+                                st.rerun()
