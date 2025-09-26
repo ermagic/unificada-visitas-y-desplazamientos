@@ -8,3 +8,4 @@ googlemaps
 holidays
 bcrypt
 supabase
+plotly
