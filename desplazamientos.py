@@ -17,11 +17,10 @@ def inicializar_estado_calculadora():
     if 'gmaps_results' not in st.session_state: st.session_state.gmaps_results = None
 
 # --- FUNCIONES DE LÓGICA ---
-
 @st.cache_data
 def cargar_datos_supabase():
     """
-    Función adaptada para cargar los datos directamente desde la tabla 'tiempos' de Supabase.
+    Carga los datos directamente desde la tabla 'tiempos' de Supabase.
     """
     try:
         # Consulta a Supabase SIN límite para obtener todos los registros
@@ -47,12 +46,11 @@ def cargar_datos_supabase():
             st.error("Error Crítico: La tabla de Supabase no contiene todas las columnas necesarias.")
             return None
         
-        # Limpieza de datos (similar a la función original de CSV)
+        # Limpieza de datos
         df_clean = df[required_cols].dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
         
-        # El tratamiento numérico se mantiene igual
         for col in ['distancia', 'minutos_total', 'minutos_cargo']:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
         
@@ -67,7 +65,6 @@ def cargar_datos_supabase():
 
 @st.cache_data
 def cargar_datos_empleados(filename="employees.csv"):
-    # Esta función se mantiene igual, ya que parece que 'employees.csv' es un archivo local
     try:
         df = pd.read_csv(filename, delimiter='|', encoding='latin-1')
         required_cols = ['PROVINCIA', 'EQUIPO', 'NOMBRE COMPLETO', 'EMAIL', 'PERSONAL']
@@ -83,9 +80,6 @@ def cargar_datos_empleados(filename="employees.csv"):
         return df_activos
     except FileNotFoundError: st.error(f"❌ Error: No se encuentra el archivo '{filename}'."); return None
     except Exception as e: st.error(f"Error al procesar '{filename}'. Error: {e}"); return None
-
-# --- EL RESTO DE FUNCIONES (calcular_minutos, mostrar_horas, send_email, etc.) SE MANTIENEN EXACTAMENTE IGUAL ---
-# ... (Aquí iría el resto de tu código sin cambios) ...
 
 def calcular_minutos_con_limite(origen, destino, gmaps_client):
     try:
@@ -128,7 +122,6 @@ def mostrar_horas_de_salida(total_minutos_desplazamiento):
 
 def send_email(recipients, subject, body):
     try:
-        # Asegúrate de que tus secrets para smtp están configurados
         smtp_cfg = st.secrets["smtp"]
         sender, password = smtp_cfg["username"], smtp_cfg["password"]
         msg = MIMEMultipart()
@@ -147,8 +140,6 @@ def send_email(recipients, subject, body):
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
     
-    # --- LÍNEA MODIFICADA ---
-    # Ahora llamamos a la función que carga desde Supabase en lugar del CSV
     df_tiempos = cargar_datos_supabase()
 
     def _cargo(minutos): return max(0, int(minutos) - 30)
@@ -187,7 +178,7 @@ def pagina_calculadora():
                         'trayecto_salida': f"De `{mun_salida}` a `{datos_salida['centro_trabajo']}`"
                     })
                     if st.session_state.calculation_results['aviso_pernocta']: st.warning("🛌 **Aviso Pernocta:** Uno o ambos trayectos superan los 80 minutos.")
-                    if st.session_state.calculation_results['aviso_dieta']: st.warning(⚠️ **Atención Media Dieta:** Uno o ambos trayectos superan los 40km.")
+                    if st.session_state.calculation_results['aviso_dieta']: st.warning("⚠️ **Atención Media Dieta:** Uno o ambos trayectos superan los 40km.")
                     if st.session_state.calculation_results['aviso_jornada']: st.warning("⏰ **Aviso Jornada:** Uno o ambos trayectos superan los 60 minutos.")
                     st.markdown("---")
                     col_res1, col_res2 = st.columns(2)
@@ -276,7 +267,6 @@ def pagina_calculadora():
             mostrar_horas_de_salida(total_final)
             st.session_state.calculation_results['total_minutos'] = total_final
             if st.button("📧 Enviar mail al equipo", key="btn_gmaps_mail"): st.session_state.calc_page = 'email_form'; st.rerun()
-
 
 # --- PÁGINA DE EMAIL ---
 def pagina_email():
