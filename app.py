@@ -1,4 +1,4 @@
-# Fichero: app.py (Versión con diseño original + logo + corrección de texto en calendario)
+# Fichero: app.py (Versión con corrección final de estilos del calendario)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
@@ -13,12 +13,33 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- INICIO DE LA CORRECCIÓN ---
-# Añadimos CSS para que el texto de los eventos del calendario se ajuste en varias líneas
+# --- INICIO DE LA CORRECCIÓN: CSS AVANZADO PARA EL CALENDARIO ---
+# Este bloque de CSS ajusta varios elementos del calendario para asegurar que el texto quepa.
 st.markdown("""
 <style>
+    /* ---- CSS GENERAL ---- */
+    .stApp { background-color: #F0F2F6; }
+    h1, h2, h3 { color: #1E293B; }
+
+    /* ---- ESTILOS PARA ARREGLAR EL CALENDARIO ---- */
+
+    /* 1. Permite que el texto salte de línea y lo hace un poco más pequeño */
     .fc-event-title {
-        white-space: normal !important; /* Permite que el texto salte de línea */
+        white-space: normal !important; /* Permite el salto de línea */
+        font-size: 0.8em !important;     /* Letra más pequeña */
+        line-height: 1.2 !important;     /* Espacio entre líneas de texto */
+    }
+
+    /* 2. Asegura una altura mínima para los eventos en la vista semanal/diaria */
+    .fc-timegrid-event {
+        min-height: 40px !important; /* Altura mínima para que quepan dos líneas cómodamente */
+        padding: 2px 4px !important; /* Reduce el espaciado interno para dar más sitio */
+    }
+    
+    /* 3. Ajusta el tamaño y espaciado de la hora dentro del evento */
+    .fc-event-time {
+        font-size: 0.75em !important;
+        font-weight: bold !important;
     }
 </style>
 """, unsafe_allow_html=True)
