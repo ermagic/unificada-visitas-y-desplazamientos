@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión Supabase Completa)
+# Fichero: planificador.py (Versión con Edición de Visitas)
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -9,7 +9,6 @@ from streamlit_calendar import calendar
 from database import supabase # Importamos el cliente de Supabase
 
 # --- FUNCIÓN AUXILIAR PARA MAPEAR FRANJAS A HORAS CONCRETAS ---
-# Esta función es de tu código original y la necesitamos para el calendario
 def map_franja_to_time(fecha, franja):
     fecha_dt = pd.to_datetime(fecha).date()
     
@@ -109,8 +108,8 @@ def mostrar_planificador():
         st.info(f"Mostrando visitas para la semana del {start_of_week.strftime('%d/%m/%Y')} al {end_of_week.strftime('%d/%m/%Y')}")
 
         weekly_visits_df = filtered_visits_df[
-            (filtered_visits_df['fecha'].dt.date >= start_of_week) & 
-            (filtered_visits_df['fecha'].dt.date <= end_of_week)
+            (filtered_visits_df['fecha'].dt.date >= start_of_week.date()) & 
+            (filtered_visits_df['fecha'].dt.date <= end_of_week.date())
         ]
 
         if not weekly_visits_df.empty:
@@ -158,7 +157,7 @@ def mostrar_planificador():
         
         calendar(events=calendar_events, options=calendar_options)
 
-    # PESTAÑA 3: GESTIÓN DE VISITAS (YA FUNCIONAL CON SUPABASE)
+    # PESTAÑA 3: GESTIÓN DE VISITAS (CÓDIGO ACTUALIZADO CON EDICIÓN)
     with tab_gestion:
         st.subheader("Gestionar Mis Próximas Visitas")
         
@@ -173,10 +172,46 @@ def mostrar_planificador():
             st.info("No tienes ninguna visita futura programada.")
         else:
             for _, visit in my_visits_df.iterrows():
+                # Usamos el ID de la visita para asegurar que cada contenedor y sus elementos son únicos
+                visit_id = visit['id'] 
+                
                 with st.container(border=True):
-                    fecha_formateada = visit['fecha'].strftime('%d/%m/%Y')
-                    st.write(f"**{fecha_formateada}** - {visit['direccion_texto']}")
-                    if st.button("🗑️ Eliminar", key=f"del_{visit['id']}", type="secondary"):
-                        supabase.table('visitas').delete().eq('id', visit['id']).execute()
-                        st.success("Visita eliminada.")
-                        st.rerun()
+                    col1, col2 = st.columns([3, 1]) # Dividimos en columnas para alinear botones
+                    
+                    with col1:
+                        fecha_formateada = visit['fecha'].strftime('%d/%m/%Y')
+                        st.write(f"**{fecha_formateada}** - **{visit['direccion_texto']}**")
+                        st.caption(f"Franja: {visit['franja_horaria']}")
+                        if visit['observaciones']:
+                            st.info(f"Observaciones: {visit['observaciones']}", icon="ℹ️")
+
+                    with col2:
+                        # Botón para eliminar, con una clave única
+                        if st.button("🗑️ Eliminar", key=f"del_{visit_id}", use_container_width=True):
+                            supabase.table('visitas').delete().eq('id', visit_id).execute()
+                            st.success(f"Visita a {visit['direccion_texto']} eliminada.")
+                            st.rerun()
+
+                    # El formulario de edición estará en un expander
+                    with st.expander("✏️ Editar esta visita"):
+                        with st.form(key=f"edit_form_{visit_id}", clear_on_submit=False):
+                            # Pre-cargamos los valores actuales de la visita
+                            franjas_list = ["Jornada Mañana (8-14h)", "Jornada Tarde (15-17h)"]
+                            current_franja_index = franjas_list.index(visit['franja_horaria']) if visit['franja_horaria'] in franjas_list else 0
+
+                            new_fecha = st.date_input("Nueva Fecha", value=pd.to_datetime(visit['fecha']), key=f"date_{visit_id}")
+                            new_franja = st.selectbox("Nueva Franja", options=franjas_list, index=current_franja_index, key=f"franja_{visit_id}")
+                            new_observaciones = st.text_area("Nuevas Observaciones", value=visit['observaciones'], key=f"obs_{visit_id}")
+
+                            if st.form_submit_button("Actualizar Visita", type="primary"):
+                                update_data = {
+                                    'fecha': new_fecha.strftime("%Y-%m-%d"),
+                                    'franja_horaria': new_franja,
+                                    'observaciones': new_observaciones
+                                }
+                                # No actualizamos la dirección para mantener la geolocalización original
+                                # Si quisieras cambiarla, habría que volver a geolocalizar
+                                
+                                supabase.table('visitas').update(update_data).eq('id', visit_id).execute()
+                                st.success(f"Visita a {visit['direccion_texto']} actualizada.")
+                                st.rerun()

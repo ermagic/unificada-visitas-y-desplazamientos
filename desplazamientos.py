@@ -1,3 +1,4 @@
+# Fichero: desplazamientos.py (Versión Final con Supabase)
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -7,6 +8,7 @@ import math
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from database import supabase # <-- IMPORTANTE: Importamos el cliente de Supabase
 
 # --- INICIALIZACIÓN DE ESTADO (para este módulo) ---
 def inicializar_estado_calculadora():
@@ -16,58 +18,59 @@ def inicializar_estado_calculadora():
     if 'gmaps_results' not in st.session_state: st.session_state.gmaps_results = None
 
 # --- FUNCIONES DE LÓGICA ---
+
 @st.cache_data
-def cargar_datos_csv(filename):
+def cargar_datos_tiempos():
+    """Carga los datos de tiempos desde la tabla 'tiempos' de Supabase."""
     try:
-        df = pd.read_csv(filename, delimiter=';', encoding='latin-1', header=0)
-        col_poblacion = 'Poblacion_IC'
-        col_centro_trabajo = 'Centro de Trabajo Nuevo'
-        col_provincia_ct = 'Provincia Centro de Trabajo'
-        col_distancia = 'Distancia en Kms'
-        col_minutos_total = 'Tiempo(Min)'
-        col_minutos_cargo = 'Tiempo a cargo de empresa(Min)'
-        df.rename(columns={
-            col_poblacion: 'poblacion', col_centro_trabajo: 'centro_trabajo',
-            col_provincia_ct: 'provincia_ct', col_distancia: 'distancia',
-            col_minutos_total: 'minutos_total', col_minutos_cargo: 'minutos_cargo'
-        }, inplace=True)
+        response = supabase.table('tiempos').select('*').execute()
+        df = pd.DataFrame(response.data)
+        
+        if df.empty:
+            st.warning("La tabla 'tiempos' de Supabase no devolvió datos.")
+            return None
+
         required_cols = ['poblacion', 'centro_trabajo', 'provincia_ct', 'distancia', 'minutos_total', 'minutos_cargo']
         if not all(col in df.columns for col in required_cols):
-            st.error(f"Error Crítico: El archivo '{filename}' no contiene todas las columnas necesarias.")
+            st.error("Error Crítico: La tabla 'tiempos' en Supabase no contiene todas las columnas necesarias.")
             return None
+        
         df_clean = df[required_cols].dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
         for col in ['distancia', 'minutos_total', 'minutos_cargo']:
-            df_clean[col] = df_clean[col].astype(str).str.replace(',', '.', regex=False)
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').fillna(0)
+        
         df_clean['minutos_total'] = df_clean['minutos_total'].astype(int)
         df_clean['minutos_cargo'] = df_clean['minutos_cargo'].astype(int)
         return df_clean
-    except FileNotFoundError:
-        st.error(f"❌ Error: No se encuentra el archivo '{filename}'. Asegúrate de que está en la carpeta principal.")
-        return None
     except Exception as e:
-        st.error(f"Error al procesar el archivo '{filename}': {e}")
+        st.error(f"Error al cargar datos de la tabla 'tiempos': {e}")
         return None
 
 @st.cache_data
-def cargar_datos_empleados(filename="employees.csv"):
+def cargar_datos_empleados():
+    """Carga los datos de empleados activos desde la tabla 'empleados' de Supabase."""
     try:
-        df = pd.read_csv(filename, delimiter='|', encoding='latin-1')
+        # Filtramos directamente en la consulta para traer solo a los activos
+        response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').execute()
+        df = pd.DataFrame(response.data)
+
+        if df.empty:
+            st.warning("La tabla 'empleados' de Supabase no devolvió datos de personal activo.")
+            return None
+
         required_cols = ['PROVINCIA', 'EQUIPO', 'NOMBRE COMPLETO', 'EMAIL', 'PERSONAL']
         if not all(col in df.columns for col in required_cols):
             missing_cols = [col for col in required_cols if col not in df.columns]
-            st.error(f"❌ Error en '{filename}': Faltan columnas: {missing_cols}")
+            st.error(f"❌ Error en la tabla 'empleados': Faltan columnas: {missing_cols}")
             return None
+            
         df = df.dropna(subset=required_cols)
-        for col in required_cols:
-            if isinstance(df[col].iloc[0], str):
-                df[col] = df[col].str.strip()
-        df_activos = df[df['PERSONAL'].str.lower() == 'activo'].copy()
-        return df_activos
-    except FileNotFoundError: st.error(f"❌ Error: No se encuentra el archivo '{filename}'."); return None
-    except Exception as e: st.error(f"Error al procesar '{filename}'. Error: {e}"); return None
+        return df
+    except Exception as e:
+        st.error(f"Error al cargar datos de la tabla 'empleados': {e}")
+        return None
 
 def calcular_minutos_con_limite(origen, destino, gmaps_client):
     try:
@@ -127,14 +130,15 @@ def send_email(recipients, subject, body):
 # --- PÁGINA DE LA CALCULADORA ---
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
-    df_tiempos = cargar_datos_csv('tiempos.csv')
+    # AHORA LLAMAMOS A LA FUNCIÓN DE SUPABASE
+    df_tiempos = cargar_datos_tiempos()
 
     def _cargo(minutos): return max(0, int(minutos) - 30)
 
-    tab1, tab2 = st.tabs(["Cálculo oficial (desde archivo)", "Cálculo informativo (con Google Maps)"])
+    tab1, tab2 = st.tabs(["Cálculo oficial (desde Base de Datos)", "Cálculo informativo (con Google Maps)"])
     
     with tab1:
-        st.subheader("Cálculo de tiempos desde el archivo")
+        st.subheader("Cálculo de tiempos desde la base de datos")
         if df_tiempos is not None:
             provincias_ct = sorted(df_tiempos['provincia_ct'].unique())
             provincia_seleccionada = st.selectbox("1. Selecciona la provincia del Centro de Trabajo:",provincias_ct, index=None, placeholder="Elige una provincia")
@@ -179,11 +183,12 @@ def pagina_calculadora():
                     mostrar_horas_de_salida(total_minutos_a_cargo)
                     st.session_state.calculation_results['total_minutos'] = total_minutos_a_cargo
                     if st.button("📧 Enviar mail al equipo", key="btn_csv_mail"): st.session_state.calc_page = 'email_form'; st.rerun()
+        else:
+            st.error("No se pudieron cargar los datos de tiempos desde la base de datos. Comprueba la conexión y la tabla 'tiempos' en Supabase.")
 
     with tab2:
         st.subheader("Cálculo por distancia (Reglas ponderadas)")
         
-        # --- LÍNEA CORREGIDA ---
         try:
             gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
         except Exception:
@@ -263,8 +268,12 @@ def pagina_email():
         st.session_state.calc_page = 'calculator'
         st.rerun()
     st.markdown("---")
+    # AHORA LLAMAMOS A LA FUNCIÓN DE SUPABASE
     employees_df = cargar_datos_empleados()
-    if employees_df is None: return
+    if employees_df is None: 
+        st.error("No se pudieron cargar los datos de empleados. No se puede continuar.")
+        return
+    
     st.subheader("1. Filtrar y Seleccionar Destinatarios")
     col1, col2 = st.columns(2)
     with col1: provincia_sel = st.selectbox("Filtrar por Provincia:", employees_df['PROVINCIA'].unique())

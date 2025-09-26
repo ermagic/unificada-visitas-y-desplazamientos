@@ -1,9 +1,10 @@
-# Fichero: app.py (Versión Supabase)
+# Fichero: app.py (Versión Final)
 import streamlit as st
-from auth import verificar_usuario
+from auth import verificar_usuario_supabase # <--- CAMBIO IMPORTANTE
 from desplazamientos import mostrar_calculadora_avanzada
 from planificador import mostrar_planificador
 from admin import mostrar_panel_admin
+from database import supabase # Importamos para gestionar el logout
 
 st.set_page_config(page_title="App Unificada", layout="wide")
 
@@ -15,22 +16,22 @@ if 'logged_in' not in st.session_state:
 if not st.session_state.logged_in:
     st.title("Plataforma de Coordinación 🗺️")
     with st.form("login_form"):
-        # CAMBIO: Usamos email en lugar de username
-        email = st.text_input("Email") 
+        email = st.text_input("Email")
         password = st.text_input("Contraseña", type="password")
         
-        if st.form_submit_button("Iniciar Sesión"):
-            user_data = verificar_usuario(email, password)
-            if user_data:
+        if st.form_submit_button("Iniciar Sesión", type="primary"):
+            # Llamamos a la nueva función de autenticación de Supabase
+            user_profile = verificar_usuario_supabase(email, password)
+            
+            if user_profile:
                 st.session_state.logged_in = True
                 # Guardamos los datos del perfil obtenidos de la tabla 'usuarios'
-                st.session_state.email = email
-                st.session_state.nombre_completo = user_data['nombre_completo']
-                st.session_state.rol = user_data['rol']
-                st.session_state.usuario_id = user_data['id'] # Este es el UUID
+                st.session_state.email = user_profile['email'] # Asumiendo que tienes un campo email
+                st.session_state.nombre_completo = user_profile['nombre_completo']
+                st.session_state.rol = user_profile['rol']
+                st.session_state.usuario_id = user_profile['id'] # Este es el UUID
                 st.rerun()
-            else:
-                st.error("Email o contraseña incorrectos")
+            # La función verificar_usuario_supabase ya muestra el st.error()
 else:
     # --- Aplicación Principal (si el usuario ha iniciado sesión) ---
     with st.sidebar:
@@ -46,6 +47,7 @@ else:
         
         st.markdown("---")
         if st.button("Cerrar Sesión"):
+            supabase.auth.sign_out() # Cerramos sesión en Supabase
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
