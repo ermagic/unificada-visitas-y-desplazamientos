@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con mapa de itinerario restaurado)
+# Fichero: supervisor.py (Versión con mapa de itinerario restaurado y lógica corregida)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -33,6 +33,8 @@ def send_email(recipients, subject, body):
         return False
 
 def get_daily_time_budget(weekday):
+    # Devuelve 9 horas (L-J) o 7 horas (V) en segundos
+    # Jornada de 8 a 17h = 9h / Jornada de 8 a 15h = 7h
     return 7 * 3600 if weekday == 4 else 9 * 3600
 
 # --- LÓGICA DEL ALGORITMO ---
@@ -156,7 +158,6 @@ def mostrar_planificador_supervisor():
                 plan_con_horas[day_iso] = visitas_con_hora
             st.session_state.plan_con_horas = plan_con_horas
 
-        # --- INICIO CÓDIGO RESTAURADO: TABS Y MAPA ---
         tab_plan, tab_mapa = st.tabs(["📅 Propuesta Detallada", "🗺️ Vista en Mapa"])
 
         with tab_plan:
@@ -208,7 +209,6 @@ def mostrar_planificador_supervisor():
                 st_folium(m, use_container_width=True, height=500)
             else:
                 st.info("No hay visitas con coordenadas para mostrar en el mapa.")
-        # --- FIN CÓDIGO RESTAURADO ---
 
         st.markdown("---")
         st.subheader("3. Confirmación")
@@ -228,4 +228,3 @@ def mostrar_planificador_supervisor():
         st.warning("Visitas que no se incluyeron en el plan (siguen a cargo de sus coordinadores):")
         for v in st.session_state.no_asignadas:
             st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']}) - *Propuesto por: {v['nombre_coordinador']}*")
-
