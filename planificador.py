@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con formulario para añadir visitas)
+# Fichero: planificador.py (Versión con formulario por población y corrección RLS explicada)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -42,7 +42,7 @@ def mostrar_planificador():
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", planificar_tab_title])
 
     with tab_global:
-        # ... (El código de la pestaña global no cambia) ...
+        # ... (código sin cambios) ...
         st.subheader("Panel de Control de Visitas de la Semana")
         
         today = date.today()
@@ -136,18 +136,16 @@ def mostrar_planificador():
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
         start, end = selected_date - timedelta(days=selected_date.weekday()), selected_date + timedelta(days=6-selected_date.weekday())
 
-        # --- INICIO DE LA CORRECCIÓN: AÑADIR FORMULARIO PARA NUEVAS VISITAS ---
         with st.expander("➕ Añadir Nueva Visita"):
             with st.form("new_visit_form", clear_on_submit=True):
                 st.write("Completa los datos para crear una nueva propuesta de visita.")
                 
-                # Usar columnas para un mejor diseño
                 col1, col2 = st.columns(2)
                 with col1:
                     new_fecha = st.date_input("Fecha", min_value=start, max_value=end)
-                    new_direccion = st.text_input("Ubicación (Dirección completa)", placeholder="Ej: Carrer Major, 1, 08001 Barcelona")
+                    # --- CORRECCIÓN: Cambiado de Dirección a Población ---
+                    new_poblacion = st.text_input("Población", placeholder="Ej: Cornellà de Llobregat")
                 with col2:
-                    # Determinar las franjas horarias según el día seleccionado
                     franjas_disponibles = HORAS_VIERNES if new_fecha and new_fecha.weekday() == 4 else HORAS_LUNES_JUEVES
                     new_franja = st.selectbox("Franja Horaria", options=sorted(set(franjas_disponibles)))
                     new_equipo = st.text_input("Equipo", placeholder="Ej: FB45")
@@ -156,35 +154,35 @@ def mostrar_planificador():
 
                 submitted = st.form_submit_button("Añadir Visita", type="primary", use_container_width=True)
                 if submitted:
-                    if not new_direccion or not new_equipo:
-                        st.warning("Por favor, completa la ubicación y el equipo.")
+                    # --- CORRECCIÓN: Usar la variable new_poblacion ---
+                    if not new_poblacion or not new_equipo:
+                        st.warning("Por favor, completa la población y el equipo.")
                     else:
                         with st.spinner("Geocodificando y guardando..."):
-                            lat, lon = geocode_address(new_direccion)
+                            lat, lon = geocode_address(new_poblacion)
                             if lat is None:
-                                st.error("No se pudo encontrar la dirección. Por favor, sé más específico.")
+                                st.error("No se pudo encontrar la población. Revisa que el nombre sea correcto.")
                             else:
                                 new_visit_data = {
                                     'usuario_id': st.session_state['usuario_id'],
                                     'fecha': str(new_fecha),
                                     'franja_horaria': new_franja,
-                                    'direccion_texto': new_direccion,
+                                    'direccion_texto': new_poblacion, # Guardamos la población en este campo
                                     'equipo': new_equipo,
                                     'observaciones': new_observaciones,
                                     'lat': lat,
                                     'lon': lon,
-                                    'status': 'Propuesta' # Todas las visitas nuevas son 'Propuesta' por defecto
+                                    'status': 'Propuesta'
                                 }
                                 try:
                                     supabase.table('visitas').insert(new_visit_data).execute()
-                                    st.success(f"¡Visita a '{new_direccion}' añadida con éxito!")
-                                    st.rerun() # Recargamos para que la tabla se actualice
+                                    st.success(f"¡Visita a '{new_poblacion}' añadida con éxito!")
+                                    st.rerun()
                                 except Exception as e:
                                     st.error(f"Error al guardar la visita: {e}")
         st.markdown("---")
-        # --- FIN DE LA CORRECCIÓN ---
-
-
+        
+        # ... (resto del código sin cambios) ...
         st.subheader("Edita o Elimina Tus Visitas Existentes")
         if rol_usuario in ['supervisor', 'admin']:
             assigned_res = supabase.table('visitas').select('*').eq('status', 'Asignada a Supervisor').gte('fecha_asignada', start).lte('fecha_asignada', end).execute()
@@ -200,7 +198,6 @@ def mostrar_planificador():
             for col in ['fecha', 'fecha_asignada']:
                 if col in df.columns: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
 
-        # ... (El resto del código de la pestaña de planificación no cambia) ...
         if rol_usuario in ['supervisor', 'admin']:
             column_config = {
                 "id": None, "usuario_id": None, "lat": None, "lon": None, "created_at": None, "id_visita_original": None,
