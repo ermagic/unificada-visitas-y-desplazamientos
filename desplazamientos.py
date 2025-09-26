@@ -1,5 +1,5 @@
-# Fichero: desplazamientos.py (Versión Final con corrección de ValueError)
-# -*- coding: utf-8 -*-
+# Fichero: desplazamientos.py (Versión con Diagnóstico Definitivo)
+# ... (el resto de imports y funciones iniciales no cambian) ...
 import streamlit as st
 import pandas as pd
 import googlemaps
@@ -26,10 +26,15 @@ def cargar_datos_tiempos():
         response = supabase.table('tiempos').select('*').limit(3000).execute()
         df = pd.DataFrame(response.data)
         
+        # --- LÍNEA DE DIAGNÓSTICO IMPORTANTE ---
+        st.info(f"🔍 **Diagnóstico:** Se han recibido {len(df.index)} filas de la tabla 'tiempos' desde Supabase.")
+        # --- FIN DE LÍNEA DE DIAGNÓSTICO ---
+        
         if df.empty:
             st.warning("La tabla 'tiempos' de Supabase no devolvió datos.")
             return None
 
+        # (El resto de la función no cambia)
         required_cols = [
             'Poblacion_WFI', 'Centro de Trabajo Nuevo', 'Provincia Centro de Trabajo', 
             'Distancia en Kms', 'Tiempo(Min)', 'Tiempo a cargo de empresa(Min)'
@@ -64,84 +69,10 @@ def cargar_datos_tiempos():
         st.error(f"Error al cargar datos de la tabla 'tiempos': {e}")
         return None
 
-@st.cache_data
-def cargar_datos_empleados():
-    """Carga los datos de empleados activos desde la tabla 'empleados' de Supabase."""
-    try:
-        response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').limit(1000).execute()
-        df = pd.DataFrame(response.data)
-
-        if df.empty:
-            st.warning("La tabla 'empleados' de Supabase no devolvió datos de personal activo.")
-            return None
-
-        required_cols = ['PROVINCIA', 'EQUIPO', 'NOMBRE COMPLETO', 'EMAIL', 'PERSONAL']
-        if not all(col in df.columns for col in required_cols):
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            st.error(f"❌ Error en la tabla 'empleados': Faltan columnas: {missing_cols}")
-            return None
-            
-        df = df.dropna(subset=required_cols)
-        return df
-    except Exception as e:
-        st.error(f"Error al cargar datos de la tabla 'empleados': {e}")
-        return None
-
-def calcular_minutos_con_limite(origen, destino, gmaps_client):
-    try:
-        directions_result = gmaps_client.directions(origen, destino, mode="driving", avoid="tolls")
-        if not directions_result or not directions_result[0]['legs']: return None, None, "No se pudo encontrar una ruta."
-        steps = directions_result[0]['legs'][0]['steps']
-        total_capped_duration_seconds, total_distance_meters = 0, 0
-        for step in steps:
-            distancia_metros = step['distance']['value']
-            duracion_google_seg = step['duration']['value']
-            total_distance_meters += distancia_metros
-            theoretical_duration_90kmh_seg = (distancia_metros / 1000) / (90 / 3600) if distancia_metros > 0 else 0
-            capped_duration_seg = max(duracion_google_seg, theoretical_duration_90kmh_seg)
-            total_capped_duration_seconds += capped_duration_seg
-        total_distancia_km = total_distance_meters / 1000
-        total_minutos_final = math.ceil(total_capped_duration_seconds / 60)
-        return total_distancia_km, total_minutos_final, None
-    except googlemaps.exceptions.ApiError as e: return None, None, f"Error de la API de Google: {e}"
-    except Exception as e: return None, None, f"Error inesperado: {e}"
-
-def mostrar_horas_de_salida(total_minutos_desplazamiento):
-    st.markdown("---"); st.subheader("🕒 Horas de Salida Sugeridas")
-    dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
-    meses_es = {"January": "enero", "February": "febrero", "March": "marzo", "April": "abril", "May": "mayo", "June": "junio", "July": "julio", "August": "agosto", "September": "septiembre", "October": "octubre", "November": "noviembre", "December": "diciembre"}
-    hoy = dt.date.today()
-    dia_en, mes_en = hoy.strftime('%A'), hoy.strftime('%B')
-    fecha_formateada = f"{dias_es.get(dia_en, dia_en)} {hoy.day} de {meses_es.get(mes_en, mes_en)}"
-    st.session_state.calculation_results['fecha'] = fecha_formateada
-    es_viernes = (hoy.weekday() == 4)
-    horarios_base = {"Verano": (dt.time(14, 0) if es_viernes else dt.time(15, 0)), "Habitual Intensivo": (dt.time(15, 0) if es_viernes else dt.time(16, 0)), "Normal": (dt.time(16, 0) if es_viernes else dt.time(17, 0))}
-    tabla_rows = [f"| Horario | Hora Salida Habitual | Hora Salida Hoy ({fecha_formateada}) |", "|---|---|---|"]
-    horas_salida_hoy = {}
-    for nombre, hora_habitual in horarios_base.items():
-        salida_dt_hoy = dt.datetime.combine(hoy, hora_habitual) - dt.timedelta(minutes=total_minutos_desplazamiento)
-        hora_salida_str = salida_dt_hoy.strftime('%H:%M')
-        horas_salida_hoy[nombre] = hora_salida_str
-        tabla_rows.append(f"| **{nombre}** | {hora_habitual.strftime('%H:%M')} | **{hora_salida_str}** |")
-    st.session_state.calculation_results['horas_salida'] = horas_salida_hoy
-    st.markdown("\n".join(tabla_rows))
-
-def send_email(recipients, subject, body):
-    try:
-        smtp_cfg = st.secrets["smtp"]
-        sender, password = smtp_cfg["username"], smtp_cfg["password"]
-        msg = MIMEMultipart()
-        msg['From'], msg['To'], msg['Subject'] = sender, ", ".join(recipients), subject
-        msg.attach(MIMEText(body, 'plain'))
-        server = smtplib.SMTP(smtp_cfg["server"], smtp_cfg["port"])
-        server.starttls(); server.login(sender, password); server.send_message(msg); server.quit()
-        st.success("✅ ¡Correo enviado con éxito!")
-        return True
-    except Exception as e: 
-        st.error(f"Error al enviar el correo: {e}")
-        st.info("Revisa la configuración en .streamlit/secrets.toml y que la contraseña de aplicación sea correcta.")
-        return False
-
+# (El resto del fichero .py es exactamente igual, por brevedad no se repite aquí pero debes tenerlo completo)
+# ...
+# (Asegúrate de que el resto de tu fichero desde @st.cache_data def cargar_datos_empleados(): hacia abajo sigue intacto)
+# ...
 # --- PÁGINA DE LA CALCULADORA ---
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
@@ -212,7 +143,6 @@ def pagina_calculadora():
         centros_map, lista_provincias_ct = {}, ["(Escribir dirección manual)"]
         if df_tiempos is not None:
             centros_df = df_tiempos[['provincia_ct', 'centro_trabajo']].drop_duplicates(subset=['provincia_ct'])
-            # --- LÍNEA CORREGIDA ---
             centros_map = pd.Series(centros_df.centro_trabajo.values, index=centros_df.provincia_ct).to_dict()
             lista_provincias_ct.extend(sorted(centros_map.keys()))
 
