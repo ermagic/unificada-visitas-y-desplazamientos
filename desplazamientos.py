@@ -1,4 +1,4 @@
-# Fichero: desplazamientos.py (Versión Final con Supabase)
+# Fichero: desplazamientos.py (Versión Final con Nombres de Columna Corregidos)
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
@@ -30,12 +30,31 @@ def cargar_datos_tiempos():
             st.warning("La tabla 'tiempos' de Supabase no devolvió datos.")
             return None
 
-        required_cols = ['poblacion', 'centro_trabajo', 'provincia_ct', 'distancia', 'minutos_total', 'minutos_cargo']
+        # --- CAMBIO IMPORTANTE: Usamos los nombres de columna EXACTOS de tu base de datos ---
+        required_cols = [
+            'Poblacion_WFI', 'Centro de Trabajo Nuevo', 'Provincia Centro de Trabajo', 
+            'Distancia en Kms', 'Tiempo(Min)', 'Tiempo a cargo de empresa(Min)'
+        ]
+        
         if not all(col in df.columns for col in required_cols):
-            st.error("Error Crítico: La tabla 'tiempos' en Supabase no contiene todas las columnas necesarias.")
+            st.error("Error Crítico: La tabla 'tiempos' en Supabase no contiene todas las columnas necesarias. Revisa los nombres.")
+            st.write("Columnas esperadas:", required_cols)
+            st.write("Columnas encontradas:", df.columns.tolist())
             return None
         
-        df_clean = df[required_cols].dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
+        # --- CAMBIO IMPORTANTE: Renombramos las columnas para que el resto del código funcione ---
+        column_mapping = {
+            'Poblacion_WFI': 'poblacion',
+            'Centro de Trabajo Nuevo': 'centro_trabajo',
+            'Provincia Centro de Trabajo': 'provincia_ct',
+            'Distancia en Kms': 'distancia',
+            'Tiempo(Min)': 'minutos_total',
+            'Tiempo a cargo de empresa(Min)': 'minutos_cargo'
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        
+        # El resto del procesamiento usa los nombres ya renombrados y sencillos
+        df_clean = df.dropna(subset=['poblacion', 'centro_trabajo', 'provincia_ct'])
         for col in ['poblacion', 'centro_trabajo', 'provincia_ct']:
             df_clean[col] = df_clean[col].str.strip()
         for col in ['distancia', 'minutos_total', 'minutos_cargo']:
@@ -52,7 +71,6 @@ def cargar_datos_tiempos():
 def cargar_datos_empleados():
     """Carga los datos de empleados activos desde la tabla 'empleados' de Supabase."""
     try:
-        # Filtramos directamente en la consulta para traer solo a los activos
         response = supabase.table('empleados').select('*').eq('PERSONAL', 'activo').execute()
         df = pd.DataFrame(response.data)
 
@@ -130,7 +148,6 @@ def send_email(recipients, subject, body):
 # --- PÁGINA DE LA CALCULADORA ---
 def pagina_calculadora():
     st.header("Calculadora de Tiempos y Notificaciones 🚗")
-    # AHORA LLAMAMOS A LA FUNCIÓN DE SUPABASE
     df_tiempos = cargar_datos_tiempos()
 
     def _cargo(minutos): return max(0, int(minutos) - 30)
@@ -268,7 +285,6 @@ def pagina_email():
         st.session_state.calc_page = 'calculator'
         st.rerun()
     st.markdown("---")
-    # AHORA LLAMAMOS A LA FUNCIÓN DE SUPABASE
     employees_df = cargar_datos_empleados()
     if employees_df is None: 
         st.error("No se pudieron cargar los datos de empleados. No se puede continuar.")
