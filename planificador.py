@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con Calendario Mejorado y Mapa Duplicado)
+# Fichero: planificador.py (Versión con Selector de Semana y Calendario Corregido)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, date
@@ -16,7 +16,7 @@ def geocode_address(address: str):
     if not address or pd.isna(address):
         return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v6")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v7")
         geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
         location = geocode(address + ", Catalunya", timeout=10)
         if location:
@@ -25,7 +25,7 @@ def geocode_address(address: str):
     except Exception:
         return None, None
 
-# --- FUNCIÓN PARA CREAR EL MAPA (NUEVA FUNCIÓN REUTILIZABLE) ---
+# --- FUNCIÓN PARA CREAR EL MAPA (se mantiene igual) ---
 def create_global_map(df, color_map):
     """Crea y muestra un mapa de Folium con las visitas."""
     st.markdown("#### 🗺️ Mapa de Visitas")
@@ -70,7 +70,6 @@ def mostrar_planificador():
         st.error("La conexión con la base de datos no está disponible.")
         st.stop()
     
-    # --- CARGA DE DATOS OPTIMIZADA (se carga una vez para todas las pestañas) ---
     all_visits_response = supabase.table('visitas').select('*, usuarios(nombre_completo)').execute()
     all_visits_df = pd.DataFrame(all_visits_response.data)
     
@@ -79,15 +78,12 @@ def mostrar_planificador():
         all_visits_df.drop(columns=['usuarios'], inplace=True)
         all_visits_df['fecha'] = pd.to_datetime(all_visits_df['fecha'])
     
-    # --- Lógica de colores unificada
     coordinadores = all_visits_df[all_visits_df['nombre_completo'] != 'Martín']['nombre_completo'].unique()
     colores = ['blue', 'orange', 'purple', 'cadetblue', 'pink', 'lightgreen', 'red', 'gray', 'lightblue', 'darkred']
     color_map = {coordinador: colores[i % len(colores)] for i, coordinador in enumerate(coordinadores)}
 
-    # --- PESTAÑAS DE VISUALIZACIÓN ---
     tab_planificar, tab_global, tab_gestion = st.tabs(["✍️ Planificar Mi Semana", "🌍 Vista Global (Calendario)", "👀 Mis Próximas Visitas"])
 
-    # --- PESTAÑA 1: PLANIFICAR MI SEMANA (con mapa incluido) ---
     with tab_planificar:
         st.subheader("Gestiona tus visitas propuestas")
         st.info("Puedes editar directamente en la tabla. Las filas en blanco se ignorarán. Haz clic en el '+' para añadir nuevas visitas.")
@@ -107,7 +103,6 @@ def mostrar_planificador():
 
         if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
             with st.spinner("Guardando y geocodificando direcciones..."):
-                # Lógica de guardado (sin cambios)
                 current_ids = set(edited_df['id'].dropna().tolist())
                 original_ids = st.session_state.original_df_ids
                 ids_to_delete = original_ids - current_ids
@@ -115,8 +110,7 @@ def mostrar_planificador():
                     for visit_id in ids_to_delete:
                         supabase.table('visitas').delete().eq('id', int(visit_id)).execute()
                 for _, row in edited_df.iterrows():
-                    if pd.isna(row['direccion_texto']) or pd.isna(row['fecha']) or pd.isna(row['equipo']):
-                        continue
+                    if pd.isna(row['direccion_texto']) or pd.isna(row['fecha']) or pd.isna(row['equipo']): continue
                     lat, lon = geocode_address(row['direccion_texto'])
                     visita_data = {'usuario_id': st.session_state['usuario_id'], 'fecha': str(row['fecha']), 'direccion_texto': row['direccion_texto'], 'equipo': row['equipo'], 'observaciones': row['observaciones'], 'status': 'Propuesta', 'lat': lat, 'lon': lon}
                     if pd.notna(row['id']) and row['id'] in original_ids:
@@ -128,49 +122,57 @@ def mostrar_planificador():
                 st.rerun()
         
         st.markdown("---")
-        # --- Llamada a la función del mapa en la primera pestaña ---
         if not all_visits_df.empty:
             create_global_map(all_visits_df, color_map)
         else:
             st.info("Aún no hay visitas planificadas para mostrar en el mapa.")
 
-
-    # --- PESTAÑA 2: VISTA GLOBAL ---
     with tab_global:
         st.subheader("Calendario de Visitas Global")
-        if not all_visits_df.empty:
-            # --- CALENDARIO GLOBAL CON FECHA INICIAL MEJORADA ---
-            st.markdown("#### 🗓️ Calendario Semanal")
-            calendar_events = []
-            for _, row in all_visits_df.iterrows():
-                if row['nombre_completo'] == 'Martín':
-                    color_evento = "black"
-                else:
-                    color_evento = color_map.get(row['nombre_completo'], 'gray')
-                title = f"{row['nombre_completo']} - {row['equipo']} en {row['direccion_texto']}"
-                calendar_events.append({"title": title, "start": row['fecha'].isoformat(), "end": (row['fecha'] + timedelta(hours=1)).isoformat(), "color": color_evento})
+        
+        # --- NUEVO: Selector de semana ---
+        selected_date = st.date_input("Selecciona una fecha para ver su semana", value=date.today(), format="DD/MM/YYYY")
+
+        if selected_date and not all_visits_df.empty:
+            # Calcular inicio y fin de la semana seleccionada (Lunes a Domingo)
+            start_of_week = selected_date - timedelta(days=selected_date.weekday())
+            end_of_week = start_of_week + timedelta(days=6)
             
-            # Define el inicio de la próxima semana para el calendario
-            today = date.today()
-            start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
+            st.info(f"Mostrando visitas para la semana del {start_of_week.strftime('%d/%m/%Y')} al {end_of_week.strftime('%d/%m/%Y')}")
 
-            calendar_options = {
-                "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek,listWeek"},
-                "initialView": "timeGridWeek",
-                "locale": "es",
-                "eventTextColor": "white",
-                "initialDate": start_of_next_week.isoformat(), # <-- CAMBIO AÑADIDO
-            }
-            calendar(events=calendar_events, options=calendar_options)
+            # Filtrar el DataFrame para esa semana
+            df_semana_filtrada = all_visits_df[
+                (all_visits_df['fecha'].dt.date >= start_of_week) & 
+                (all_visits_df['fecha'].dt.date <= end_of_week)
+            ]
+
+            if not df_semana_filtrada.empty:
+                calendar_events = []
+                for _, row in df_semana_filtrada.iterrows():
+                    if row['nombre_completo'] == 'Martín':
+                        color_evento = "black"
+                    else:
+                        color_evento = color_map.get(row['nombre_completo'], 'gray')
+                    title = f"{row['nombre_completo']} - {row['equipo']} en {row['direccion_texto']}"
+                    calendar_events.append({"title": title, "start": row['fecha'].isoformat(), "end": (row['fecha'] + timedelta(hours=1)).isoformat(), "color": color_evento})
+                
+                calendar_options = {
+                    "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek,listWeek"},
+                    "initialView": "timeGridWeek", "locale": "es", "eventTextColor": "white",
+                    "initialDate": start_of_week.isoformat(),
+                }
+                calendar(events=calendar_events, options=calendar_options, key=f"cal_{start_of_week}")
+            else:
+                st.warning("No hay visitas planificadas para la semana seleccionada.")
         else:
-            st.warning("No hay visitas para mostrar en la vista global.")
-
-    # --- PESTAÑA 3: MIS PRÓXIMAS VISITAS (sin cambios) ---
+            st.warning("No hay ninguna visita planificada en el sistema.")
+    
     with tab_gestion:
         st.subheader("Resumen de Mis Próximas Visitas")
         mis_visitas_res = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).order('fecha', desc=False).execute()
         df_mis_visitas = pd.DataFrame(mis_visitas_res.data)
         if not df_mis_visitas.empty:
+            df_mis_visitas['fecha'] = pd.to_datetime(df_mis_visitas['fecha']).dt.strftime('%d/%m/%Y')
             df_mis_visitas_show = df_mis_visitas[['fecha', 'direccion_texto', 'equipo', 'status', 'observaciones']]
             st.dataframe(df_mis_visitas_show, use_container_width=True)
         else:
