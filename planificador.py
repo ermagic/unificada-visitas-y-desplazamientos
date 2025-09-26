@@ -14,7 +14,7 @@ from streamlit_calendar import calendar
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
 
-# --- INICIO CORRECCIÓN: Función para obtener iniciales ---
+# --- INICIO CORRECCIÓN ANTERIOR: Función para obtener iniciales ---
 def get_initials(full_name: str) -> str:
     """Extrae las iniciales de un nombre completo."""
     if not full_name or not isinstance(full_name, str):
@@ -27,7 +27,7 @@ def get_initials(full_name: str) -> str:
     elif len(parts) == 1:
         return parts[0][0].upper()
     return "??"
-# --- FIN CORRECCIÓN ---
+# --- FIN CORRECCIÓN ANTERIOR ---
 
 @st.cache_data(ttl=60*60*24)
 def geocode_address(address: str):
@@ -94,12 +94,9 @@ def mostrar_planificador():
 
                     popup_html = f"<b>Asignado a:</b> {row['Asignado a']}<br><b>Equipo:</b> {row['Equipo']}<br><b>Ubicación:</b> {row['Ubicación']}"
                     
-                    # --- INICIO CORRECCIÓN: Lógica de iconos dinámicos ---
                     if row['status'] == 'Asignada a Supervisor':
-                        # Icono de detective para el supervisor
                         icon = folium.Icon(color='darkpurple', icon='user-secret', prefix='fa')
                     else:
-                        # Icono con iniciales para el coordinador
                         initials = get_initials(row['Coordinador'])
                         icon_html = f'<div style="font-family: Arial, sans-serif; font-size: 12px; font-weight: bold; color: white; background-color: #0078A8; border-radius: 50%; width: 25px; height: 25px; text-align: center; line-height: 25px; border: 1px solid white;">{initials}</div>'
                         icon = DivIcon(html=icon_html)
@@ -109,8 +106,7 @@ def mostrar_planificador():
                         popup=folium.Popup(popup_html, max_width=300), 
                         icon=icon
                     ).add_to(m)
-                    # --- FIN CORRECCIÓN ---
-                
+
                 sw, ne = df_mapa[['lat', 'lon']].min().values.tolist(), df_mapa[['lat', 'lon']].max().values.tolist()
                 m.fit_bounds([sw, ne])
                 st_folium(m, use_container_width=True, height=500)
@@ -140,7 +136,42 @@ def mostrar_planificador():
                 if start and end:
                     events.append({"title": titulo, "start": start.isoformat(), "end": end.isoformat(), "color": color, "textColor": "white"})
             
-            calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat(), "slotMinTime": "08:00:00", "slotMaxTime": "18:00:00"}, key=f"cal_{start_cal}")
+            # --- INICIO DE LA CORRECCIÓN ---
+            # Se define un bloque CSS para estilizar el texto de los eventos en el calendario.
+            # Esto soluciona el problema del texto cortado.
+            calendar_css = """
+            .fc-event-main {
+                overflow: hidden; /* Evita cualquier desbordamiento visual */
+            }
+            .fc-event-title {
+                font-size: 0.8em !important;     /* Reduce el tamaño de la fuente */
+                line-height: 1.2 !important;     /* Ajusta la altura de la línea para evitar cortes */
+                white-space: normal !important;  /* Permite que el texto se divida en varias líneas */
+                padding: 2px !important;         /* Añade un pequeño espacio interior */
+            }
+            """
+            # --- FIN DE LA CORRECCIÓN ---
+            
+            calendar(
+                events=events, 
+                options={
+                    "headerToolbar": {
+                        "left": "prev,next today", 
+                        "center": "title", 
+                        "right": "dayGridMonth,timeGridWeek"
+                    }, 
+                    "initialView": "timeGridWeek", 
+                    "locale": "es", 
+                    "initialDate": start_cal.isoformat(), 
+                    "slotMinTime": "08:00:00", 
+                    "slotMaxTime": "18:00:00"
+                },
+                # --- INICIO DE LA CORRECCIÓN ---
+                # Se aplica el CSS personalizado al componente del calendario.
+                custom_css=calendar_css,
+                # --- FIN DE LA CORRECCIÓN ---
+                key=f"cal_{start_cal}"
+            )
 
     with tab_planificar:
         st.subheader("Añade o Edita Tus Visitas")
@@ -195,7 +226,6 @@ def mostrar_planificador():
         if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
             with st.spinner("Guardando..."):
                 
-                # --- INICIO CORRECCIÓN: Lógica para detectar y ejecutar eliminaciones ---
                 original_ids = set(df['id'].dropna())
                 edited_ids = set(edited_df['id'].dropna())
                 ids_to_delete = original_ids - edited_ids
@@ -206,7 +236,6 @@ def mostrar_planificador():
                         st.toast(f"Visita {visit_id} eliminada.")
                     except Exception as e:
                         st.error(f"Error eliminando visita {visit_id}: {e}")
-                # --- FIN CORRECCIÓN ---
 
                 for _, row in edited_df.iterrows():
                     if pd.isna(row.get('direccion_texto')) or pd.isna(row.get('equipo')): continue
