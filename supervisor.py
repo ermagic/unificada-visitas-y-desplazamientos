@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con selección de 3 días)
+# Fichero: supervisor.py (Versión con lógica de tiempo corregida y mejoras visuales)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -32,7 +32,8 @@ def send_email(recipients, subject, body):
         return False
 
 def get_daily_time_budget(weekday):
-    return 7 * 3600 if weekday == 4 else 8 * 3600
+    # Devuelve 9 horas (L-J) o 7 horas (V) en segundos
+    return 7 * 3600 if weekday == 4 else 9 * 3600
 
 # --- LÓGICA DEL ALGORITMO ---
 def generar_planificacion_automatica(dias_seleccionados):
@@ -68,7 +69,6 @@ def generar_planificacion_automatica(dias_seleccionados):
     plan_final = {}
     visitas_ya_planificadas_ids = set()
     
-    # El algoritmo ahora itera sobre los 3 días que el supervisor ha elegido
     for dia_laboral in dias_seleccionados:
         presupuesto_tiempo_dia = get_daily_time_budget(dia_laboral.weekday())
         
@@ -84,17 +84,21 @@ def generar_planificacion_automatica(dias_seleccionados):
         for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
             for combo in itertools.combinations(visitas_disponibles_hoy, cantidad):
                 for orden in itertools.permutations(combo):
-                    locations = [PUNTO_INICIO_MARTIN] + [v['direccion_texto'] for v in orden]
-                    matrix = gmaps.distance_matrix(locations, locations, mode="driving")
+                    # --- INICIO LÓGICA DE TIEMPO CORREGIDA ---
+                    # El tiempo de trabajo se cuenta desde que empieza la primera visita hasta que acaba la última.
+                    tiempo_de_trabajo = len(orden) * DURACION_VISITA_SEGUNDOS
                     
-                    tiempo_total = matrix['rows'][0]['elements'][1]['duration']['value']
-                    for i in range(len(orden) - 1):
-                        tiempo_total += matrix['rows'][i+1]['elements'][i+2]['duration']['value']
-                    tiempo_total += len(orden) * DURACION_VISITA_SEGUNDOS
+                    # Se suman los tiempos de viaje ENTRE las visitas
+                    if len(orden) > 1:
+                        direcciones_ruta = [v['direccion_texto'] for v in orden]
+                        matrix = gmaps.distance_matrix(direcciones_ruta, direcciones_ruta, mode="driving")
+                        for i in range(len(orden) - 1):
+                            tiempo_de_trabajo += matrix['rows'][i]['elements'][i+1]['duration']['value']
+                    # --- FIN LÓGICA DE TIEMPO CORREGIDA ---
 
-                    if tiempo_total <= presupuesto_tiempo_dia:
+                    if tiempo_de_trabajo <= presupuesto_tiempo_dia:
                         num_obligatorias = sum(1 for v in combo if v.get('ayuda_solicitada'))
-                        puntuacion_actual = (num_obligatorias, len(combo), -tiempo_total)
+                        puntuacion_actual = (num_obligatorias, len(combo), -tiempo_de_trabajo)
                         
                         if puntuacion_actual > mejor_puntuacion:
                             mejor_puntuacion = puntuacion_actual
@@ -120,20 +124,22 @@ def generar_planificacion_automatica(dias_seleccionados):
 def mostrar_planificador_supervisor():
     st.header("Planificador de Martín (Supervisor) 🤖")
 
-    # --- INICIO: Selección de días ---
     st.subheader("1. Selecciona los días para planificar")
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     dias_semana_siguiente = [start_of_next_week + timedelta(days=i) for i in range(5)]
 
+    # --- INICIO MEJORA: Días de la semana en español ---
+    dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
+    
     dias_seleccionados = st.multiselect(
         "Elige 3 días de la próxima semana:",
         options=dias_semana_siguiente,
-        format_func=lambda d: d.strftime('%A, %d/%m'), # Formato para mostrar en el selector
+        format_func=lambda d: f"{dias_es.get(d.strftime('%A'))}, {d.strftime('%d/%m')}",
         max_selections=3
     )
     st.markdown("---")
-    # --- FIN: Selección de días ---
+    # --- FIN MEJORA ---
 
     if st.button("🤖 Generar planificación para los 3 días seleccionados", type="primary", use_container_width=True):
         if len(dias_seleccionados) != 3:
@@ -158,16 +164,28 @@ def mostrar_planificador_supervisor():
                 plan_con_horas = {}
                 for day_iso, visitas in plan.items():
                     day = date.fromisoformat(day_iso)
-                    hora_actual, visitas_con_hora = datetime.combine(day, time(8, 0)), []
-                    origen = PUNTO_INICIO_MARTIN
-                    for v in visitas:
-                        tiempo_viaje = gmaps.distance_matrix(origen, v['direccion_texto'], mode="driving")['rows'][0]['elements'][0]['duration']['value']
-                        hora_actual += timedelta(seconds=tiempo_viaje)
-                        v_con_hora = v.copy()
-                        v_con_hora['hora_asignada'] = hora_actual.strftime('%H:%M')
-                        visitas_con_hora.append(v_con_hora)
-                        hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
-                        origen = v['direccion_texto']
+                    # --- INICIO LÓGICA DE HORAS CORREGIDA ---
+                    hora_actual = datetime.combine(day, time(8, 0)) # La primera visita siempre empieza a las 8:00
+                    visitas_con_hora = []
+
+                    if visitas:
+                        # Asignar hora a la primera visita
+                        v_primera = visitas[0].copy()
+                        v_primera['hora_asignada'] = hora_actual.strftime('%H:%M')
+                        visitas_con_hora.append(v_primera)
+                        
+                        # Calcular horas para las siguientes visitas
+                        for i in range(len(visitas) - 1):
+                            hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS) # Añadir duración de la visita actual
+                            origen = visitas[i]['direccion_texto']
+                            destino = visitas[i+1]['direccion_texto']
+                            tiempo_viaje = gmaps.distance_matrix(origen, destino, mode="driving")['rows'][0]['elements'][0]['duration']['value']
+                            hora_actual += timedelta(seconds=tiempo_viaje) # Añadir tiempo de viaje a la siguiente
+                            
+                            v_siguiente = visitas[i+1].copy()
+                            v_siguiente['hora_asignada'] = hora_actual.strftime('%H:%M')
+                            visitas_con_hora.append(v_siguiente)
+                    # --- FIN LÓGICA DE HORAS CORREGIDA ---
                     plan_con_horas[day_iso] = visitas_con_hora
                 st.session_state.plan_con_horas = plan_con_horas
 
@@ -177,7 +195,14 @@ def mostrar_planificador_supervisor():
                     nombre_dia = day.strftime('%A, %d de %B').capitalize()
                     with st.expander(f"**{nombre_dia}** ({len(visitas)} visitas)", expanded=True):
                         for v in visitas:
-                            st.markdown(f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} (*Propuesto por: {v['nombre_coordinador']}*)")
+                            # --- INICIO MEJORA: Etiqueta "ayuda pedida" ---
+                            ayuda_texto = " <span style='color:red;'>(ayuda pedida)</span>" if v.get('ayuda_solicitada') else ""
+                            st.markdown(
+                                f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} "
+                                f"(*Propuesto por: {v['nombre_coordinador']}{ayuda_texto}*)",
+                                unsafe_allow_html=True
+                            )
+                            # --- FIN MEJORA ---
             
             st.markdown("---")
             st.subheader("3. Confirmación")
