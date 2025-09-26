@@ -1,4 +1,4 @@
-# Fichero: supervisor.py (Versión con BUG Corregido en mapa)
+# Fichero: supervisor.py (Versión con diagnóstico y centrado de mapa)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
@@ -37,10 +37,14 @@ def generar_planificacion_automatica():
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     end_of_next_week = start_of_next_week + timedelta(days=4)
-
+    
+    # <-- CAMBIO: Añadimos mensajes de diagnóstico
+    st.info(f"Buscando visitas 'Propuesta' para la semana del {start_of_next_week.strftime('%d/%m/%Y')}.")
     response = supabase.table('visitas').select('*, usuarios(nombre_completo)').eq('status', 'Propuesta').gte('fecha', start_of_next_week).lte('fecha', end_of_next_week).execute()
     visitas_df = pd.DataFrame(response.data)
     
+    st.info(f"Se encontraron {len(visitas_df)} visitas disponibles para planificar.")
+
     if visitas_df.empty:
         st.warning("No hay visitas de coordinadores disponibles para planificar la próxima semana.")
         return None, None
@@ -100,8 +104,9 @@ def mostrar_planificador_supervisor():
             st.session_state.supervisor_plan, st.session_state.no_asignadas = generar_planificacion_automatica()
             if 'plan_con_horas' in st.session_state: del st.session_state.plan_con_horas
             if st.session_state.supervisor_plan: st.success("¡Planificación óptima generada!")
-            st.rerun()
-
+            # No hacemos rerun aquí para poder ver los mensajes de diagnóstico
+    
+    # El resto del código se ejecuta si el plan ya existe en el estado de la sesión
     if "supervisor_plan" in st.session_state and st.session_state.supervisor_plan:
         plan = st.session_state.supervisor_plan
         if 'plan_con_horas' not in st.session_state:
@@ -135,37 +140,38 @@ def mostrar_planificador_supervisor():
             if df_visitas.empty:
                 st.warning("No hay visitas con coordenadas para mostrar en el mapa.")
             else:
-                map_center = [df_visitas['lat'].mean(), df_visitas['lon'].mean()]
-                m = folium.Map(location=map_center, zoom_start=11)
+                # <-- CAMBIO: Lógica de centrado y zoom automático del mapa
+                m = folium.Map()
+
                 try:
-                    location = Nominatim(user_agent="supervisor_map_v5").geocode(PUNTO_INICIO_MARTIN)
+                    location = Nominatim(user_agent="supervisor_map_v6").geocode(PUNTO_INICIO_MARTIN)
                     if location: folium.Marker([location.latitude, location.longitude], popup="Punto de Salida/Llegada", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
                 except Exception: pass
                 
-                # <-- CAMBIO: Lógica de solapamiento de pines corregida (Anti-KeyError)
                 coords_counter = {}
                 day_colors = ['blue', 'red', 'purple', 'orange', 'darkgreen']
                 for i, (day_iso, visitas) in enumerate(st.session_state.plan_con_horas.items()):
                     day = date.fromisoformat(day_iso)
-                    color, points = day_colors[i % len(day_colors)], []
+                    color = day_colors[i % len(day_colors)]
                     for visit_idx, visit in enumerate(visitas):
                         if pd.notna(visit.get('lat')) and pd.notna(visit.get('lon')):
                             original_coords = (visit['lat'], visit['lon'])
                             offset_count = coords_counter.get(original_coords, 0)
-                            
-                            lat = visit['lat'] + 0.0001 * offset_count
-                            lon = visit['lon'] + 0.0001 * offset_count
-                            
+                            lat, lon = visit['lat'] + 0.0001 * offset_count, visit['lon'] + 0.0001 * offset_count
                             coords_counter[original_coords] = offset_count + 1
 
-                            points.append((lat, lon))
                             popup_html = f"<b>{day.strftime('%A')} - Visita {visit_idx + 1}</b><br><b>Hora:</b> {visit['hora_asignada']}h<br><b>Equipo:</b> {visit['equipo']}<br><b>Dirección:</b> {visit['direccion_texto']}"
                             DivIcon_html=f'<div style="font-family: sans-serif; color: {color}; font-size: 18px; font-weight: bold; text-shadow: -1px 0 white, 0 1px white, 1px 0 white, 0 -1px white;">{visit_idx + 1}</div>'
                             folium.Marker([lat, lon], popup=folium.Popup(popup_html, max_width=300), icon=DivIcon(icon_size=(150,36), icon_anchor=(7,20), html=DivIcon_html)).add_to(m)
-                    if len(points) > 1: folium.PolyLine(points, color=color, weight=2.5, opacity=0.8).add_to(m)
+
+                sw = df_visitas[['lat', 'lon']].min().values.tolist()
+                ne = df_visitas[['lat', 'lon']].max().values.tolist()
+                m.fit_bounds([sw, ne])
+                
                 st_folium(m, use_container_width=True, height=500)
 
         st.markdown("---")
+        # ... (El resto del fichero no necesita cambios)
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Confirmar y Asignar", use_container_width=True, type="primary"):

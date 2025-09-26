@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con BUG Corregido en mapa y tabla de visitas)
+# Fichero: planificador.py (Versión con corrección de error en data_editor y centrado de mapa)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -18,7 +18,7 @@ STATUS_COLORS = {'Asignada a Supervisor': 'green', 'Propuesta': 'gray'}
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v17")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v18")
         location = geolocator.geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
         return None, None
@@ -54,7 +54,6 @@ def mostrar_planificador():
                 return row['Coordinador']
             df_all['Asignado a'] = df_all.apply(get_assignee, axis=1)
 
-            # <-- CAMBIO: Lógica de la tabla de visitas corregida
             st.markdown("#### Tabla de Visitas")
             df_all['Fecha Visita'] = pd.to_datetime(df_all['fecha_asignada'].fillna(df_all['fecha'])).dt.strftime('%d/%m/%Y')
             df_all['Hora Visita'] = df_all['hora_asignada'].fillna(df_all['franja_horaria'])
@@ -67,24 +66,25 @@ def mostrar_planificador():
             df_mapa = df_all.dropna(subset=['lat', 'lon']).copy()
             
             if not df_mapa.empty:
-                map_center = [df_mapa['lat'].mean(), df_mapa['lon'].mean()]
-                m = folium.Map(location=map_center, zoom_start=10)
-                
-                # <-- CAMBIO: Lógica de solapamiento de pines corregida (Anti-KeyError)
+                # <-- CAMBIO: Lógica de centrado y zoom automático del mapa
+                m = folium.Map()
+
                 coords_counter = {}
                 for _, row in df_mapa.iterrows():
                     original_coords = (row['lat'], row['lon'])
                     offset_count = coords_counter.get(original_coords, 0)
-                    
-                    lat = row['lat'] + 0.0001 * offset_count
-                    lon = row['lon'] + 0.0001 * offset_count
-                    
+                    lat, lon = row['lat'] + 0.0001 * offset_count, row['lon'] + 0.0001 * offset_count
                     coords_counter[original_coords] = offset_count + 1
 
                     color = 'green' if row['status'] == 'Asignada a Supervisor' else 'blue'
                     popup_html = f"<b>Asignado a:</b> {row['Asignado a']}<br><b>Equipo:</b> {row['Equipo']}<br><b>Ubicación:</b> {row['Ubicación']}"
                     folium.Marker([lat, lon], popup=folium.Popup(popup_html, max_width=300), icon=folium.Icon(color=color, icon='briefcase', prefix='fa')).add_to(m)
                 
+                # Le decimos al mapa que se ajuste para mostrar todos los puntos
+                sw = df_mapa[['lat', 'lon']].min().values.tolist()
+                ne = df_mapa[['lat', 'lon']].max().values.tolist()
+                m.fit_bounds([sw, ne])
+
                 st_folium(m, use_container_width=True, height=500)
             else: 
                 st.info("No hay visitas con coordenadas para mostrar en el mapa.")
@@ -118,6 +118,10 @@ def mostrar_planificador():
         
         response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).execute()
         df = pd.DataFrame(response.data)
+
+        # <-- CAMBIO: Convertimos la columna 'fecha' al tipo de dato correcto ANTES de pasarla al editor
+        if not df.empty:
+            df['fecha'] = pd.to_datetime(df['fecha']).dt.date
 
         column_config = {
             "id": None, "usuario_id": None, "lat": None, "lon": None, "created_at": None, "status": None,
