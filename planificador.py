@@ -176,6 +176,9 @@ def mostrar_planificador():
                                 supabase.table('visitas').update({'ayuda_solicitada': False}).eq('id', visita['id']).execute()
                                 st.rerun()
                         else:
-                            if st.button("🙋 Pedir Ayuda", key=f"ask_{visita['id']}", use_container_width=True, disabled=ayuda_ya_solicitada):
+                            # --- INICIO DE LA CORRECCIÓN ---
+                            if st.button("🙋 Pedir Ayuda a Martín", key=f"ask_{visita['id']}", use_container_width=True, disabled=ayuda_ya_solicitada, help="Solicitar ayuda prioritaria a Martín"):
+                            # --- FIN DE LA CORRECCIÓN ---
                                 supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute()
                                 st.rerun()
+
