@@ -33,6 +33,7 @@ def send_email(recipients, subject, body):
 
 def get_daily_time_budget(weekday):
     # Devuelve 9 horas (L-J) o 7 horas (V) en segundos
+    # Jornada de 8 a 17h = 9h / Jornada de 8 a 15h = 7h
     return 7 * 3600 if weekday == 4 else 9 * 3600
 
 # --- LÓGICA DEL ALGORITMO ---
@@ -84,17 +85,13 @@ def generar_planificacion_automatica(dias_seleccionados):
         for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
             for combo in itertools.combinations(visitas_disponibles_hoy, cantidad):
                 for orden in itertools.permutations(combo):
-                    # --- INICIO LÓGICA DE TIEMPO CORREGIDA ---
-                    # El tiempo de trabajo se cuenta desde que empieza la primera visita hasta que acaba la última.
                     tiempo_de_trabajo = len(orden) * DURACION_VISITA_SEGUNDOS
                     
-                    # Se suman los tiempos de viaje ENTRE las visitas
                     if len(orden) > 1:
                         direcciones_ruta = [v['direccion_texto'] for v in orden]
                         matrix = gmaps.distance_matrix(direcciones_ruta, direcciones_ruta, mode="driving")
                         for i in range(len(orden) - 1):
                             tiempo_de_trabajo += matrix['rows'][i]['elements'][i+1]['duration']['value']
-                    # --- FIN LÓGICA DE TIEMPO CORREGIDA ---
 
                     if tiempo_de_trabajo <= presupuesto_tiempo_dia:
                         num_obligatorias = sum(1 for v in combo if v.get('ayuda_solicitada'))
@@ -129,7 +126,6 @@ def mostrar_planificador_supervisor():
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
     dias_semana_siguiente = [start_of_next_week + timedelta(days=i) for i in range(5)]
 
-    # --- INICIO MEJORA: Días de la semana en español ---
     dias_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes"}
     
     dias_seleccionados = st.multiselect(
@@ -139,7 +135,6 @@ def mostrar_planificador_supervisor():
         max_selections=3
     )
     st.markdown("---")
-    # --- FIN MEJORA ---
 
     if st.button("🤖 Generar planificación para los 3 días seleccionados", type="primary", use_container_width=True):
         if len(dias_seleccionados) != 3:
@@ -164,45 +159,40 @@ def mostrar_planificador_supervisor():
                 plan_con_horas = {}
                 for day_iso, visitas in plan.items():
                     day = date.fromisoformat(day_iso)
-                    # --- INICIO LÓGICA DE HORAS CORREGIDA ---
-                    hora_actual = datetime.combine(day, time(8, 0)) # La primera visita siempre empieza a las 8:00
+                    hora_actual = datetime.combine(day, time(8, 0))
                     visitas_con_hora = []
 
                     if visitas:
-                        # Asignar hora a la primera visita
                         v_primera = visitas[0].copy()
                         v_primera['hora_asignada'] = hora_actual.strftime('%H:%M')
                         visitas_con_hora.append(v_primera)
                         
-                        # Calcular horas para las siguientes visitas
                         for i in range(len(visitas) - 1):
-                            hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS) # Añadir duración de la visita actual
+                            hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
                             origen = visitas[i]['direccion_texto']
                             destino = visitas[i+1]['direccion_texto']
                             tiempo_viaje = gmaps.distance_matrix(origen, destino, mode="driving")['rows'][0]['elements'][0]['duration']['value']
-                            hora_actual += timedelta(seconds=tiempo_viaje) # Añadir tiempo de viaje a la siguiente
+                            hora_actual += timedelta(seconds=tiempo_viaje)
                             
                             v_siguiente = visitas[i+1].copy()
                             v_siguiente['hora_asignada'] = hora_actual.strftime('%H:%M')
                             visitas_con_hora.append(v_siguiente)
-                    # --- FIN LÓGICA DE HORAS CORREGIDA ---
                     plan_con_horas[day_iso] = visitas_con_hora
                 st.session_state.plan_con_horas = plan_con_horas
 
             if 'plan_con_horas' in st.session_state and st.session_state.plan_con_horas:
                 for day_iso, visitas in st.session_state.plan_con_horas.items():
                     day = date.fromisoformat(day_iso)
-                    nombre_dia = day.strftime('%A, %d de %B').capitalize()
-                    with st.expander(f"**{nombre_dia}** ({len(visitas)} visitas)", expanded=True):
+                    nombre_dia_es = dias_es.get(day.strftime('%A'))
+                    nombre_dia_completo = day.strftime(f'{nombre_dia_es}, %d de %B').capitalize()
+                    with st.expander(f"**{nombre_dia_completo}** ({len(visitas)} visitas)", expanded=True):
                         for v in visitas:
-                            # --- INICIO MEJORA: Etiqueta "ayuda pedida" ---
                             ayuda_texto = " <span style='color:red;'>(ayuda pedida)</span>" if v.get('ayuda_solicitada') else ""
                             st.markdown(
                                 f"- **{v['hora_asignada']}h** - {v['direccion_texto']} | **Equipo**: {v['equipo']} "
                                 f"(*Propuesto por: {v['nombre_coordinador']}{ayuda_texto}*)",
                                 unsafe_allow_html=True
                             )
-                            # --- FIN MEJORA ---
             
             st.markdown("---")
             st.subheader("3. Confirmación")
@@ -222,4 +212,3 @@ def mostrar_planificador_supervisor():
         st.warning("Visitas que no se incluyeron en el plan (siguen a cargo de sus coordinadores):")
         for v in st.session_state.no_asignadas:
             st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']}) - *Propuesto por: {v['nombre_coordinador']}*")
-

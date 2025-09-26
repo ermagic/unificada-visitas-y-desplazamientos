@@ -1,4 +1,4 @@
-# Fichero: app.py (Versión con Panel de Anuncios)
+# Fichero: app.py (Versión con Logros y Panel de Anuncios)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
@@ -7,6 +7,7 @@ from admin import mostrar_panel_admin
 from supervisor import mostrar_planificador_supervisor
 from stats import mostrar_stats
 from coordinador_planner import mostrar_planificador_coordinador
+from logros import mostrar_logros
 from database import supabase
 
 st.set_page_config(page_title="App Unificada", layout="wide")
@@ -72,7 +73,8 @@ else:
         st.markdown("---")
 
         # --- Lógica de Navegación ---
-        opciones = ["Planificador de Visitas", "Calculadora de Desplazamientos"]
+        opciones = ["Planificador de Visitas", "Calculadora de Desplazamientos", "Logros"]
+        
         if st.session_state.rol in ['admin', 'supervisor']:
             opciones.append("Planificador Automático")
             opciones.append("Stats")
@@ -80,8 +82,9 @@ else:
             opciones.append("Planificación Óptima de Visitas")
         if st.session_state.rol == 'admin':
             opciones.append("Gestión de Usuarios")
-            
+
         pagina_seleccionada = st.radio("Selecciona una herramienta:", opciones)
+        
         st.markdown("---")
         if st.button("Cerrar Sesión"):
             supabase.auth.sign_out()
@@ -89,27 +92,18 @@ else:
             st.rerun()
 
     # --- Contenido Principal ---
-    if pagina_seleccionada == "Planificador de Visitas": 
-        mostrar_planificador()
-    elif pagina_seleccionada == "Calculadora de Desplazamientos": 
-        mostrar_calculadora_avanzada()
+    if pagina_seleccionada == "Planificador de Visitas": mostrar_planificador()
+    elif pagina_seleccionada == "Calculadora de Desplazamientos": mostrar_calculadora_avanzada()
+    elif pagina_seleccionada == "Logros": mostrar_logros()
     elif pagina_seleccionada == "Planificador Automático":
-        if st.session_state.rol in ['admin', 'supervisor']: 
-            mostrar_planificador_supervisor()
-        else: 
-            st.error("No tienes permisos para acceder a esta sección.")
+        if st.session_state.rol in ['admin', 'supervisor']: mostrar_planificador_supervisor()
+        else: st.error("No tienes permisos para acceder a esta sección.")
     elif pagina_seleccionada == "Stats":
-        if st.session_state.rol in ['admin', 'supervisor']: 
-            mostrar_stats()
-        else: 
-            st.error("No tienes permisos para acceder a esta sección.")
+        if st.session_state.rol in ['admin', 'supervisor']: mostrar_stats()
+        else: st.error("No tienes permisos para acceder a esta sección.")
     elif pagina_seleccionada == "Planificación Óptima de Visitas":
-        if st.session_state.rol == 'coordinador': 
-            mostrar_planificador_coordinador()
-        else: 
-            st.error("No tienes permisos para acceder a esta sección.")
+        if st.session_state.rol == 'coordinador': mostrar_planificador_coordinador()
+        else: st.error("No tienes permisos para acceder a esta sección.")
     elif pagina_seleccionada == "Gestión de Usuarios":
-        if st.session_state.rol == 'admin': 
-            mostrar_panel_admin()
-        else: 
-            st.error("No tienes permisos para acceder a esta sección.")
+        if st.session_state.rol == 'admin': mostrar_panel_admin()
+        else: st.error("No tienes permisos para acceder a esta sección.")
