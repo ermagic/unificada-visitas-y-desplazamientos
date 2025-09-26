@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con Iconos Personalizados y Calendario Visible)
+# Fichero: planificador.py (Versión Corregida - Error de tipo de dato en data_editor)
 import streamlit as st
 import pandas as pd
 from datetime import timedelta, date
@@ -16,7 +16,7 @@ def geocode_address(address: str):
     if not address or pd.isna(address):
         return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v3")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v4")
         geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
         location = geocode(address + ", Catalunya", timeout=10)
         if location:
@@ -35,18 +35,22 @@ def mostrar_planificador():
     # --- PESTAÑAS DE VISUALIZACIÓN ---
     tab_planificar, tab_global, tab_gestion = st.tabs(["✍️ Planificar Mi Semana", "🌍 Vista Global (Mapa y Calendario)", "👀 Mis Próximas Visitas"])
 
-    # --- PESTAÑA 1: PLANIFICAR MI SEMANA (sin cambios en esta versión) ---
+    # --- PESTAÑA 1: PLANIFICAR MI SEMANA ---
     with tab_planificar:
         st.subheader("Gestiona tus visitas propuestas")
         st.info("Puedes editar directamente en la tabla. Las filas en blanco se ignorarán. Haz clic en el '+' para añadir nuevas visitas.")
         
-        # Cargar las visitas existentes que están en estado "Propuesta"
         mis_visitas_propuestas_res = supabase.table('visitas').select('*').eq(
             'usuario_id', st.session_state['usuario_id']
         ).eq('status', 'Propuesta').execute()
         
         df_propuestas_original = pd.DataFrame(mis_visitas_propuestas_res.data)
         
+        # --- LÍNEA CORREGIDA ---
+        # Convertimos la columna 'fecha' a un objeto de fecha, que es lo que espera DateColumn.
+        if not df_propuestas_original.empty:
+            df_propuestas_original['fecha'] = pd.to_datetime(df_propuestas_original['fecha']).dt.date
+
         if 'original_df_ids' not in st.session_state:
             st.session_state.original_df_ids = set(df_propuestas_original['id'].tolist()) if not df_propuestas_original.empty else set()
 
@@ -99,7 +103,7 @@ def mostrar_planificador():
                 st.session_state.original_df_ids = None
                 st.rerun()
 
-    # --- PESTAÑA 2: VISTA GLOBAL (CON ICONOS PERSONALIZADOS) ---
+    # --- PESTAÑA 2: VISTA GLOBAL (sin cambios en esta versión) ---
     with tab_global:
         st.subheader("Mapa y Calendario de Visitas Global")
         all_visits_response = supabase.table('visitas').select('*, usuarios(nombre_completo)').execute()
@@ -110,7 +114,6 @@ def mostrar_planificador():
             all_visits_df.drop(columns=['usuarios'], inplace=True)
             all_visits_df['fecha'] = pd.to_datetime(all_visits_df['fecha'])
 
-            # --- MAPA GLOBAL CON ICONOS PERSONALIZADOS ---
             st.markdown("#### 🗺️ Mapa de Visitas")
             map_data = all_visits_df.dropna(subset=['lat', 'lon'])
             
@@ -118,7 +121,6 @@ def mostrar_planificador():
                 map_center = [41.8781, 1.7834] # Cataluña
                 m = folium.Map(location=map_center, zoom_start=8)
 
-                # --- Lógica de colores para coordinadores ---
                 coordinadores = map_data[map_data['nombre_completo'] != 'Martín']['nombre_completo'].unique()
                 colores = ['blue', 'orange', 'purple', 'cadetblue', 'pink', 'lightgreen', 'red', 'gray', 'lightblue', 'darkred']
                 color_map = {coordinador: colores[i % len(colores)] for i, coordinador in enumerate(coordinadores)}
@@ -126,13 +128,12 @@ def mostrar_planificador():
                 for _, row in map_data.iterrows():
                     nombre = row['nombre_completo']
                     
-                    # Asignar icono y color
                     if nombre == 'Martín':
                         color_icono = 'black'
-                        icono_fa = 'user-shield' # Icono de escudo
+                        icono_fa = 'user-shield'
                     else:
-                        color_icono = color_map.get(nombre, 'gray') # Color asignado
-                        icono_fa = 'user' # Icono estándar de usuario
+                        color_icono = color_map.get(nombre, 'gray')
+                        icono_fa = 'user'
                     
                     popup_html = f"""
                     <b>Ubicación:</b> {row['direccion_texto']}<br>
@@ -152,11 +153,9 @@ def mostrar_planificador():
             else:
                 st.info("No hay visitas con coordenadas geográficas para mostrar en el mapa.")
 
-            # --- CALENDARIO GLOBAL (LÓGICA REVISADA PARA MÁXIMA VISIBILIDAD) ---
             st.markdown("#### 🗓️ Calendario Semanal")
             calendar_events = []
             for _, row in all_visits_df.iterrows():
-                # Asignar color según el usuario
                 if row['nombre_completo'] == 'Martín':
                     color_evento = "black"
                 else:
