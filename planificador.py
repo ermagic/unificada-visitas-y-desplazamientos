@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con Edición de Visitas)
+# Fichero: planificador.py (Versión Corregida)
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
@@ -44,7 +44,7 @@ def mostrar_planificador():
             how='left'
         ).rename(columns={'id_x': 'id'})
 
-    # --- FORMULARIO PARA AÑADIR VISITA (YA FUNCIONAL CON SUPABASE) ---
+    # --- FORMULARIO PARA AÑADIR VISITA ---
     with st.expander("➕ Añadir Nueva Visita", expanded=False):
         with st.form("visit_form", clear_on_submit=True):
             direccion = st.text_input("Ciudad de la visita")
@@ -80,14 +80,12 @@ def mostrar_planificador():
     st.markdown("---")
     
     # --- FILTROS Y PREPARACIÓN DE DATOS ---
-    # Permitir a los admins ver todo, los demás solo ven lo suyo
     if st.session_state['rol'] == 'admin':
         vision_global = st.toggle("Visión Global (ver todos los usuarios)", value=True)
         filtered_visits_df = all_visits_df if vision_global else all_visits_df[all_visits_df['usuario_id'] == st.session_state['usuario_id']]
     else:
         filtered_visits_df = all_visits_df[all_visits_df['usuario_id'] == st.session_state['usuario_id']]
 
-    # Mapeo de colores para usuarios
     if not users_df.empty:
         coordinadores = users_df['nombre_completo'].unique()
         colores_mapa = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightred', 'beige', 'darkblue', 'darkgreen', 'cadetblue']
@@ -98,7 +96,7 @@ def mostrar_planificador():
     # --- PESTAÑAS DE VISUALIZACIÓN ---
     tab_semanal, tab_calendario, tab_gestion = st.tabs(["🗓️ Visión Semanal", "📅 Vista Calendario", "✏️ Gestionar Mis Visitas"])
 
-    # PESTAÑA 1: MAPA SEMANAL (RESTAURADA)
+    # PESTAÑA 1: MAPA SEMANAL
     with tab_semanal:
         st.subheader("Mapa de Visitas")
         selected_date = st.date_input("Selecciona una fecha para centrar la semana", value=datetime.today())
@@ -106,10 +104,11 @@ def mostrar_planificador():
         end_of_week = start_of_week + timedelta(days=6)
         
         st.info(f"Mostrando visitas para la semana del {start_of_week.strftime('%d/%m/%Y')} al {end_of_week.strftime('%d/%m/%Y')}")
-
+        
+        # --- LÍNEA CORREGIDA ---
         weekly_visits_df = filtered_visits_df[
-            (filtered_visits_df['fecha'].dt.date >= start_of_week.date()) & 
-            (filtered_visits_df['fecha'].dt.date <= end_of_week.date())
+            (filtered_visits_df['fecha'].dt.date >= start_of_week) & 
+            (filtered_visits_df['fecha'].dt.date <= end_of_week)
         ]
 
         if not weekly_visits_df.empty:
@@ -131,7 +130,7 @@ def mostrar_planificador():
         else:
             st.info("No hay visitas planificadas para esta semana.")
 
-    # PESTAÑA 2: CALENDARIO (RESTAURADO)
+    # PESTAÑA 2: CALENDARIO
     with tab_calendario:
         st.subheader("Calendario de Visitas")
         calendar_events = []
@@ -139,10 +138,10 @@ def mostrar_planificador():
             for _, row in filtered_visits_df.iterrows():
                 start_time, end_time = map_franja_to_time(row['fecha'], row['franja_horaria'])
                 calendar_events.append({
-                    "title": f"{row['nombre_completo']} - {row['direccion_texto']}",
+                    "title": f"{row.get('nombre_completo', 'Usuario Desconocido')} - {row['direccion_texto']}",
                     "start": start_time,
                     "end": end_time,
-                    "color": color_map.get(row['nombre_completo'], 'gray'),
+                    "color": color_map.get(row.get('nombre_completo'), 'gray'),
                 })
         
         calendar_options = {
@@ -152,17 +151,16 @@ def mostrar_planificador():
                 "right": "dayGridMonth,timeGridWeek,timeGridDay",
             },
             "initialView": "dayGridMonth",
-            "locale": "es", # Calendario en español
+            "locale": "es",
         }
         
         calendar(events=calendar_events, options=calendar_options)
 
-    # PESTAÑA 3: GESTIÓN DE VISITAS (CÓDIGO ACTUALIZADO CON EDICIÓN)
+    # PESTAÑA 3: GESTIÓN DE VISITAS
     with tab_gestion:
         st.subheader("Gestionar Mis Próximas Visitas")
         
         my_id = st.session_state['usuario_id']
-        # Usamos el DataFrame ya cargado para no hacer otra llamada a la DB
         my_visits_df = all_visits_df[
             (all_visits_df['usuario_id'] == my_id) & 
             (all_visits_df['fecha'].dt.date >= datetime.today().date())
@@ -172,36 +170,32 @@ def mostrar_planificador():
             st.info("No tienes ninguna visita futura programada.")
         else:
             for _, visit in my_visits_df.iterrows():
-                # Usamos el ID de la visita para asegurar que cada contenedor y sus elementos son únicos
                 visit_id = visit['id'] 
                 
                 with st.container(border=True):
-                    col1, col2 = st.columns([3, 1]) # Dividimos en columnas para alinear botones
+                    col1, col2 = st.columns([3, 1])
                     
                     with col1:
                         fecha_formateada = visit['fecha'].strftime('%d/%m/%Y')
                         st.write(f"**{fecha_formateada}** - **{visit['direccion_texto']}**")
                         st.caption(f"Franja: {visit['franja_horaria']}")
-                        if visit['observaciones']:
+                        if visit.get('observaciones'):
                             st.info(f"Observaciones: {visit['observaciones']}", icon="ℹ️")
 
                     with col2:
-                        # Botón para eliminar, con una clave única
                         if st.button("🗑️ Eliminar", key=f"del_{visit_id}", use_container_width=True):
                             supabase.table('visitas').delete().eq('id', visit_id).execute()
                             st.success(f"Visita a {visit['direccion_texto']} eliminada.")
                             st.rerun()
 
-                    # El formulario de edición estará en un expander
                     with st.expander("✏️ Editar esta visita"):
                         with st.form(key=f"edit_form_{visit_id}", clear_on_submit=False):
-                            # Pre-cargamos los valores actuales de la visita
                             franjas_list = ["Jornada Mañana (8-14h)", "Jornada Tarde (15-17h)"]
                             current_franja_index = franjas_list.index(visit['franja_horaria']) if visit['franja_horaria'] in franjas_list else 0
 
                             new_fecha = st.date_input("Nueva Fecha", value=pd.to_datetime(visit['fecha']), key=f"date_{visit_id}")
                             new_franja = st.selectbox("Nueva Franja", options=franjas_list, index=current_franja_index, key=f"franja_{visit_id}")
-                            new_observaciones = st.text_area("Nuevas Observaciones", value=visit['observaciones'], key=f"obs_{visit_id}")
+                            new_observaciones = st.text_area("Nuevas Observaciones", value=visit.get('observaciones', ''), key=f"obs_{visit_id}")
 
                             if st.form_submit_button("Actualizar Visita", type="primary"):
                                 update_data = {
@@ -209,8 +203,6 @@ def mostrar_planificador():
                                     'franja_horaria': new_franja,
                                     'observaciones': new_observaciones
                                 }
-                                # No actualizamos la dirección para mantener la geolocalización original
-                                # Si quisieras cambiarla, habría que volver a geolocalizar
                                 
                                 supabase.table('visitas').update(update_data).eq('id', visit_id).execute()
                                 st.success(f"Visita a {visit['direccion_texto']} actualizada.")
