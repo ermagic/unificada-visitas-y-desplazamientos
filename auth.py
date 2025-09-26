@@ -1,4 +1,4 @@
-# Fichero: auth.py (Versión Supabase)
+# Fichero: auth.py (Versión de DIAGNÓSTICO)
 import streamlit as st
 from database import supabase # Importamos el cliente ya inicializado
 
@@ -12,7 +12,8 @@ def verificar_usuario(email, password):
         return None
         
     try:
-        # Supabase se encarga de la seguridad, el hashing y la verificación.
+        # Intenta iniciar sesión en Supabase
+        st.info("Intentando iniciar sesión...")
         response = supabase.auth.sign_in_with_password({
             "email": email,
             "password": password
@@ -21,14 +22,24 @@ def verificar_usuario(email, password):
         user = response.user
         
         if user:
-            # Si el login es exitoso, obtenemos su perfil de la tabla 'usuarios'
+            # Si el login tiene éxito, intenta buscar el perfil
+            st.info("Login correcto. Buscando perfil del usuario...")
             profile_response = supabase.table('usuarios').select('*').eq('id', user.id).single().execute()
             user_data = profile_response.data
-            return user_data # Devuelve el perfil completo (id, nombre_completo, rol)
+            
+            # Si no encuentra el perfil, user_data estará vacío
+            if not user_data:
+                st.error("Error Crítico: El login fue correcto, pero no se encontró un perfil para este usuario en la tabla 'usuarios'. Verifica que el UID coincide.")
+                return None
+
+            st.success("¡Perfil encontrado! Deberías poder entrar.")
+            return user_data
 
     except Exception as e:
-        # Supabase devuelve un error si las credenciales son incorrectas
-        # Lo capturamos para no mostrar mensajes de error técnicos al usuario.
+        # ¡ESTA LÍNEA ES LA MÁS IMPORTANTE!
+        # Muestra el error técnico real en la pantalla.
+        st.error("Ha ocurrido un error durante la autenticación:")
+        st.exception(e) # Esto mostrará el error completo y detallado
         return None
     
     return None
