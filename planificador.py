@@ -1,9 +1,10 @@
-# Fichero: planificador.py (Versión con edición de visitas para Supervisor corregida)
+# Fichero: planificador.py (Versión con geocodificación restringida a Cataluña)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
 import re
 from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from database import supabase
 import folium
 from folium.features import DivIcon
@@ -14,6 +15,8 @@ from streamlit_calendar import calendar
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
 CATALONIA_CENTER = [41.8795, 1.7887]
+# Recuadro geográfico que engloba Cataluña para restringir las búsquedas
+CATALONIA_VIEWBOX = [[42.86, 3.32], [40.52, 0.18]] # [esquina Noreste], [esquina Suroeste]
 
 def get_initials(full_name: str) -> str:
     if not full_name or not isinstance(full_name, str): return "??"
@@ -23,21 +26,42 @@ def get_initials(full_name: str) -> str:
     elif len(parts) == 1: return parts[0][0].upper()
     return "??"
 
+# --- FUNCIÓN DE GEOCODIFICACIÓN MODIFICADA ---
 @st.cache_data(ttl=60*60*24)
 def geocode_address(address: str):
-    if not address or pd.isna(address): return None, None
+    """
+    Geocodifica una dirección restringiendo la búsqueda a Cataluña.
+    Devuelve (lat, lon, error_message).
+    """
+    if not address or pd.isna(address): 
+        return None, None, "La población no puede estar vacía."
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v21")
-        location = geolocator.geocode(address + ", Catalunya", timeout=10)
-        if location: return location.latitude, location.longitude
-        return None, None
-    except Exception: return None, None
+        geolocator = Nominatim(user_agent=f"wfi_planner_app/{st.session_state.get('usuario_id', 'unknown')}")
+        
+        # Búsqueda restringida al recuadro de Cataluña
+        location = geolocator.geocode(
+            query=address,
+            viewbox=CATALONIA_VIEWBOX,
+            bounded=True, # Importante: esto obliga a que el resultado esté DENTRO del recuadro
+            timeout=10
+        )
+        
+        if location:
+            return location.latitude, location.longitude, None
+        else:
+            return None, None, f"No se pudo encontrar '{address}' dentro de Cataluña. Revisa que el nombre sea correcto."
+            
+    except GeocoderTimedOut:
+        return None, None, "El servicio de mapas ha tardado demasiado en responder. Inténtalo de nuevo en unos segundos."
+    except GeocoderServiceError as e:
+        return None, None, f"Error del servicio de mapas: {e}. Puede que el servicio esté temporalmente caído."
+    except Exception as e:
+        return None, None, f"Ha ocurrido un error inesperado al geocodificar: {e}"
 
 def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
     rol_usuario = st.session_state.get('rol', 'coordinador')
     
-    # --- INICIALIZACIÓN DE ESTADO PARA EDICIÓN ---
     if 'editing_visit_id' not in st.session_state:
         st.session_state.editing_visit_id = None
 
@@ -45,7 +69,7 @@ def mostrar_planificador():
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", planificar_tab_title])
 
     with tab_global:
-        # ... (código de esta pestaña sin cambios)
+        # ... (código sin cambios)
         st.subheader("Panel de Control de Visitas de la Semana")
         today = date.today()
         start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
@@ -56,7 +80,9 @@ def mostrar_planificador():
         start_cal, end_cal = cal_date - timedelta(days=cal_date.weekday()), cal_date + timedelta(days=6-cal_date.weekday())
         response = supabase.table('visitas').select('*, usuario:usuario_id(nombre_completo, id)').gte('fecha', start_cal).lte('fecha', end_cal).execute()
         df_all = pd.DataFrame(response.data)
-        if not df_all.empty:
+        if df_all.empty:
+            st.success("👍 No hay aún visitas planificadas para la semana seleccionada.")
+        else:
             df_all['usuario_id_fk'] = df_all['usuario'].apply(lambda x: x['id'] if isinstance(x, dict) else None)
             df_all['Coordinador'] = df_all['usuario'].apply(lambda x: x['nombre_completo'] if isinstance(x, dict) else 'Desconocido')
             df_all.rename(columns={'equipo': 'Equipo', 'direccion_texto': 'Ubicación', 'observaciones': 'Observaciones'}, inplace=True)
@@ -107,7 +133,6 @@ def mostrar_planificador():
             calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat()}, custom_css=calendar_css, key=f"cal_{start_cal}")
 
     with tab_planificar:
-        # ... (código del formulario de añadir visita y de visitas del coordinador sin cambios)
         today_plan = date.today()
         start_of_next_week_plan = today_plan + timedelta(days=-today.weekday(), weeks=1)
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
@@ -128,8 +153,9 @@ def mostrar_planificador():
                     if not new_poblacion or not new_equipo: st.warning("Por favor, completa la población y el equipo.")
                     else:
                         with st.spinner("Geocodificando y guardando..."):
-                            lat, lon = geocode_address(new_poblacion)
-                            if lat is None: st.error("No se pudo encontrar la población. Revisa que el nombre sea correcto.")
+                            lat, lon, error_msg = geocode_address(new_poblacion)
+                            if error_msg:
+                                st.error(error_msg)
                             else:
                                 if not supabase.table('visitas').select('id').ilike('direccion_texto', f"%{new_poblacion}%").limit(1).execute().data:
                                     supabase.table('logros').insert({'usuario_id': st.session_state['usuario_id'], 'logro_tipo': 'explorador', 'fecha_logro': str(date.today()), 'detalles': {'poblacion': new_poblacion}}).execute()
@@ -165,7 +191,6 @@ def mostrar_planificador():
                             if st.button("🤝 Ofrecer", key=f"offer_{visita['id']}", use_container_width=True, help="Ofrecer esta visita al resto del equipo"):
                                 supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute(); st.rerun()
 
-        # --- SECCIÓN MODIFICADA Y AMPLIADA PARA SUPERVISOR/ADMIN ---
         if st.session_state.get('rol') in ['supervisor', 'admin']:
             st.markdown("---")
             st.subheader("📋 Mis Visitas Asignadas")
@@ -181,7 +206,6 @@ def mostrar_planificador():
                             with edit_form:
                                 st.markdown(f"**Editando visita a: {visita['direccion_texto']}**")
                                 current_date = datetime.strptime(visita['fecha_asignada'], '%Y-%m-%d').date()
-                                # CORRECCIÓN ERROR HORA: Añadimos %S para leer los segundos
                                 current_time = datetime.strptime(visita['hora_asignada'], '%H:%M:%S').time()
                                 new_date = st.date_input("Nueva fecha", value=current_date)
                                 new_time = st.time_input("Nueva hora", value=current_time)
