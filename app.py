@@ -1,4 +1,4 @@
-# Fichero: app.py (Versión con Mercado de Visitas y Logros)
+# Fichero: app.py (Versión con Mercado de Visitas, Logros y Nombre en Anuncios)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
@@ -42,11 +42,19 @@ else:
         # --- PANEL DE ANUNCIOS ---
         st.subheader("📢 Anuncios")
         try:
-            response = supabase.table('anuncios').select('*').eq('activo', True).order('created_at', desc=True).execute()
+            # MODIFICACIÓN 1: Hacemos un "join" para obtener también el nombre del autor
+            response = supabase.table('anuncios').select(
+                '*, autor:usuario_id(nombre_completo)'
+            ).eq('activo', True).order('created_at', desc=True).execute()
             anuncios = response.data
+            
             if anuncios:
                 for anuncio in anuncios:
-                    st.info(anuncio['mensaje'])
+                    # MODIFICACIÓN 2: Extraemos el nombre y lo mostramos
+                    autor_info = anuncio.get('autor')
+                    autor_nombre = autor_info.get('nombre_completo', 'Sistema') if isinstance(autor_info, dict) else 'Sistema'
+                    mensaje_con_autor = f"{anuncio['mensaje']}\n\n*— {autor_nombre}*"
+                    st.info(mensaje_con_autor)
             else:
                 st.info("No hay anuncios activos.")
         except Exception as e:
@@ -58,7 +66,12 @@ else:
                     nuevo_mensaje = st.text_area("Nuevo anuncio:")
                     if st.form_submit_button("Publicar Anuncio"):
                         if nuevo_mensaje:
-                            supabase.table('anuncios').insert({'mensaje': nuevo_mensaje, 'activo': True}).execute()
+                            # MODIFICACIÓN 3: Guardamos el ID del usuario que crea el anuncio
+                            supabase.table('anuncios').insert({
+                                'mensaje': nuevo_mensaje,
+                                'activo': True,
+                                'usuario_id': st.session_state['usuario_id'] # <-- AÑADIDO
+                            }).execute()
                             st.rerun()
                 
                 st.markdown("---")

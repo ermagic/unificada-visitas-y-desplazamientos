@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con Mercado de Visitas)
+# Fichero: planificador.py (Versión con Mercado y Gestión para Supervisor)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -27,7 +27,7 @@ def get_initials(full_name: str) -> str:
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v18")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v19")
         location = geolocator.geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
         return None, None
@@ -222,3 +222,50 @@ def mostrar_planificador():
                             if st.button("🤝 Ofrecer", key=f"offer_{visita['id']}", use_container_width=True, help="Ofrecer esta visita al resto del equipo"):
                                 supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute()
                                 st.rerun()
+
+        # --- INICIO DE LA NUEVA SECCIÓN PARA SUPERVISOR/ADMIN ---
+        if st.session_state.get('rol') in ['supervisor', 'admin']:
+            st.markdown("---")
+            st.subheader("📋 Mis Visitas Asignadas")
+
+            try:
+                assigned_res = supabase.table('visitas').select(
+                    '*, coordinador:usuario_id(nombre_completo)'
+                ).eq(
+                    'status', 'Asignada a Supervisor'
+                ).order('fecha_asignada').execute()
+                
+                assigned_visits = assigned_res.data
+
+                if not assigned_visits:
+                    st.info("Actualmente no tienes ninguna visita asignada.")
+                else:
+                    st.write("Desde aquí puedes devolver una visita a su coordinador original si es necesario.")
+                    
+                    for visita in assigned_visits:
+                        with st.container(border=True):
+                            coordinador_info = visita.get('coordinador', {})
+                            coordinador_nombre = coordinador_info.get('nombre_completo', 'Desconocido') if isinstance(coordinador_info, dict) else 'Desconocido'
+                            
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(f"**📍 {visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
+                                st.caption(f"Asignada para el **{visita['fecha_asignada']}** a las **{visita['hora_asignada']}h**. Proviene de: **{coordinador_nombre}**.")
+                            
+                            with col2:
+                                if st.button("↩️ Devolver a Coordinador", key=f"devolver_{visita['id']}", use_container_width=True):
+                                    update_data = {
+                                        'status': 'Propuesta',
+                                        'fecha_asignada': None,
+                                        'hora_asignada': None
+                                    }
+                                    try:
+                                        supabase.table('visitas').update(update_data).eq('id', visita['id']).execute()
+                                        st.success(f"La visita a {visita['direccion_texto']} ha sido devuelta a {coordinador_nombre}.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error al devolver la visita: {e}")
+
+            except Exception as e:
+                st.error(f"Error al cargar las visitas asignadas: {e}")
+        # --- FIN DE LA NUEVA SECCIÓN ---
