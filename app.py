@@ -41,6 +41,8 @@ else:
 
         # --- PANEL DE ANUNCIOS ---
         st.subheader("📢 Anuncios")
+        
+        anuncios = [] # <-- LÍNEA AÑADIDA PARA SOLUCIONAR EL ERROR
         try:
             # MODIFICACIÓN 1: Hacemos un "join" para obtener también el nombre del autor
             response = supabase.table('anuncios').select(
