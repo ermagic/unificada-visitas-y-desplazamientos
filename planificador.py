@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión con Mercado y Gestión para Supervisor)
+# Fichero: planificador.py (Versión con edición de visitas para Supervisor)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -27,7 +27,7 @@ def get_initials(full_name: str) -> str:
 def geocode_address(address: str):
     if not address or pd.isna(address): return None, None
     try:
-        geolocator = Nominatim(user_agent="streamlit_app_planner_v19")
+        geolocator = Nominatim(user_agent="streamlit_app_planner_v20")
         location = geolocator.geocode(address + ", Catalunya", timeout=10)
         if location: return location.latitude, location.longitude
         return None, None
@@ -36,6 +36,11 @@ def geocode_address(address: str):
 def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
     rol_usuario = st.session_state.get('rol', 'coordinador')
+    
+    # --- INICIALIZACIÓN DE ESTADO PARA EDICIÓN ---
+    if 'editing_visit_id' not in st.session_state:
+        st.session_state.editing_visit_id = None
+
     planificar_tab_title = "✍️ Gestionar Visitas" if rol_usuario in ['supervisor', 'admin'] else "✍️ Planificar Mis Visitas"
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", planificar_tab_title])
 
@@ -135,6 +140,7 @@ def mostrar_planificador():
 
         with st.expander("➕ Añadir Nueva Visita"):
             with st.form("new_visit_form", clear_on_submit=True):
+                # ... (código del formulario sin cambios)
                 col1, col2 = st.columns(2)
                 with col1:
                     new_fecha = st.date_input("Fecha", min_value=start, max_value=end)
@@ -181,10 +187,10 @@ def mostrar_planificador():
         st.markdown("---")
         
         st.subheader("Tus Visitas Propuestas para esta Semana")
+        # ... (código de visitas propuestas del coordinador sin cambios)
         response = supabase.table('visitas').select('*').eq(
             'usuario_id', st.session_state['usuario_id']
         ).gte('fecha', start).lte('fecha', end).order('fecha').execute()
-        
         visitas_semana = response.data
         ayuda_ya_solicitada = any(v.get('ayuda_solicitada') for v in visitas_semana)
 
@@ -192,8 +198,8 @@ def mostrar_planificador():
             st.info("No tienes visitas propuestas para la semana seleccionada.")
         else:
             st.success("Puedes solicitar ayuda a Martín u ofrecer una visita al equipo para intercambiarla.")
-            
             for visita in visitas_semana:
+                # ... (código de la tarjeta de visita del coordinador sin cambios)
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
                     with col1:
@@ -202,7 +208,6 @@ def mostrar_planificador():
                     with col2:
                         st.write(f"**Equipo:** {visita['equipo']}")
                         st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
-
                     with col3:
                         if visita.get('ayuda_solicitada'):
                             if st.button("✔️ Ayuda Solicitada", key=f"cancel_{visita['id']}", type="primary", use_container_width=True, help="Cancelar la solicitud de ayuda"):
@@ -212,7 +217,6 @@ def mostrar_planificador():
                             if st.button("🙋 Pedir Ayuda a Martín", key=f"ask_{visita['id']}", use_container_width=True, disabled=ayuda_ya_solicitada, help="Solicitar que esta visita sea incluida en el plan de Martín"):
                                 supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute()
                                 st.rerun()
-                    
                     with col4:
                         if visita.get('en_mercado'):
                             if st.button("↩️ Retirar", key=f"unoffer_{visita['id']}", use_container_width=True, help="Retirar la visita del mercado"):
@@ -223,7 +227,7 @@ def mostrar_planificador():
                                 supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute()
                                 st.rerun()
 
-        # --- INICIO DE LA NUEVA SECCIÓN PARA SUPERVISOR/ADMIN ---
+        # --- SECCIÓN MODIFICADA Y AMPLIADA PARA SUPERVISOR/ADMIN ---
         if st.session_state.get('rol') in ['supervisor', 'admin']:
             st.markdown("---")
             st.subheader("📋 Mis Visitas Asignadas")
@@ -240,32 +244,61 @@ def mostrar_planificador():
                 if not assigned_visits:
                     st.info("Actualmente no tienes ninguna visita asignada.")
                 else:
-                    st.write("Desde aquí puedes devolver una visita a su coordinador original si es necesario.")
-                    
                     for visita in assigned_visits:
-                        with st.container(border=True):
-                            coordinador_info = visita.get('coordinador', {})
-                            coordinador_nombre = coordinador_info.get('nombre_completo', 'Desconocido') if isinstance(coordinador_info, dict) else 'Desconocido'
-                            
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                st.markdown(f"**📍 {visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
-                                st.caption(f"Asignada para el **{visita['fecha_asignada']}** a las **{visita['hora_asignada']}h**. Proviene de: **{coordinador_nombre}**.")
-                            
-                            with col2:
-                                if st.button("↩️ Devolver a Coordinador", key=f"devolver_{visita['id']}", use_container_width=True):
+                        # Si la visita actual es la que se está editando, muestra el formulario
+                        if st.session_state.editing_visit_id == visita['id']:
+                            with st.form(key=f"edit_form_{visita['id']}"):
+                                st.markdown(f"**Editando visita a: {visita['direccion_texto']}**")
+                                
+                                # Convertir fecha y hora a objetos para los widgets
+                                current_date = datetime.strptime(visita['fecha_asignada'], '%Y-%m-%d').date()
+                                current_time = datetime.strptime(visita['hora_asignada'], '%H:%M').time()
+
+                                new_date = st.date_input("Nueva fecha", value=current_date)
+                                new_time = st.time_input("Nueva hora", value=current_time)
+
+                                col_save, col_cancel = st.columns(2)
+                                if col_save.form_submit_button("💾 Guardar Cambios", use_container_width=True, type="primary"):
                                     update_data = {
-                                        'status': 'Propuesta',
-                                        'fecha_asignada': None,
-                                        'hora_asignada': None
+                                        'fecha_asignada': new_date.strftime('%Y-%m-%d'),
+                                        'hora_asignada': new_time.strftime('%H:%M')
                                     }
-                                    try:
+                                    supabase.table('visitas').update(update_data).eq('id', visita['id']).execute()
+                                    st.success("Visita actualizada con éxito.")
+                                    st.session_state.editing_visit_id = None
+                                    st.rerun()
+
+                                if col_cancel.form_submit_button("✖️ Cancelar", use_container_width=True):
+                                    st.session_state.editing_visit_id = None
+                                    st.rerun()
+
+                        # Si no, muestra la vista normal con los botones
+                        else:
+                             with st.container(border=True):
+                                coordinador_info = visita.get('coordinador', {})
+                                coordinador_nombre = coordinador_info.get('nombre_completo', 'Desconocido') if isinstance(coordinador_info, dict) else 'Desconocido'
+                                
+                                col1, col2, col3 = st.columns([3, 1, 1])
+                                with col1:
+                                    st.markdown(f"**📍 {visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
+                                    st.caption(f"Asignada para el **{visita['fecha_asignada']}** a las **{visita['hora_asignada']}h**. Proviene de: **{coordinador_nombre}**.")
+                                
+                                with col2:
+                                    if st.button("✏️ Editar", key=f"edit_{visita['id']}", use_container_width=True):
+                                        st.session_state.editing_visit_id = visita['id']
+                                        st.rerun()
+
+                                with col3:
+                                    if st.button("↩️ Devolver", key=f"devolver_{visita['id']}", use_container_width=True, help="Devolver la visita a su coordinador original"):
+                                        update_data = {
+                                            'status': 'Propuesta',
+                                            'fecha_asignada': None,
+                                            'hora_asignada': None
+                                        }
                                         supabase.table('visitas').update(update_data).eq('id', visita['id']).execute()
                                         st.success(f"La visita a {visita['direccion_texto']} ha sido devuelta a {coordinador_nombre}.")
                                         st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Error al devolver la visita: {e}")
 
             except Exception as e:
                 st.error(f"Error al cargar las visitas asignadas: {e}")
-        # --- FIN DE LA NUEVA SECCIÓN ---
+        # --- FIN DE LA SECCIÓN ---
