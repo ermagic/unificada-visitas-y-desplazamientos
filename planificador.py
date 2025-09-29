@@ -1,9 +1,8 @@
-# Fichero: planificador.py (Versión con geocodificación de Google Maps)
+# Fichero: planificador.py (Versión final con edición/eliminación para coordinadores)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
 import re
-# Ya no necesitamos geopy, ahora usamos googlemaps
 import googlemaps
 from database import supabase
 import folium
@@ -15,7 +14,6 @@ from streamlit_calendar import calendar
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
 CATALONIA_CENTER = [41.8795, 1.7887]
-# Recuadro para las búsquedas de Google, para que priorice resultados en Cataluña
 CATALONIA_BOUNDS = {
     "northeast": {"lat": 42.86, "lng": 3.32},
     "southwest": {"lat": 40.52, "lng": 0.18},
@@ -29,29 +27,19 @@ def get_initials(full_name: str) -> str:
     elif len(parts) == 1: return parts[0][0].upper()
     return "??"
 
-# --- FUNCIÓN DE GEOCODIFICACIÓN ACTUALIZADA A GOOGLE MAPS ---
 @st.cache_data(ttl=60*60*24)
 def geocode_address(address: str):
-    """
-    Geocodifica una dirección usando la API de Google Maps.
-    Devuelve (lat, lon, error_message).
-    """
     if not address or pd.isna(address): 
         return None, None, "La población no puede estar vacía."
     try:
-        # Inicializamos el cliente de Google Maps con la clave de los secretos
         gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
-        
-        # Hacemos la llamada a la API, priorizando la región y el recuadro de Cataluña
         geocode_result = gmaps.geocode(address, region='ES', bounds=CATALONIA_BOUNDS)
-        
         if geocode_result:
             lat = geocode_result[0]['geometry']['location']['lat']
             lon = geocode_result[0]['geometry']['location']['lng']
             return lat, lon, None
         else:
             return None, None, f"Google Maps no pudo encontrar la población '{address}'."
-            
     except Exception as e:
         return None, None, f"Ha ocurrido un error con la API de Google Maps: {e}"
 
@@ -130,13 +118,14 @@ def mostrar_planificador():
             calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat()}, custom_css=calendar_css, key=f"cal_{start_cal}")
 
     with tab_planificar:
-        # ... (código de esta pestaña no cambia, solo la función geocode_address que llama)
         today_plan = date.today()
         start_of_next_week_plan = today_plan + timedelta(days=-today.weekday(), weeks=1)
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
         start, end = selected_date - timedelta(days=selected_date.weekday()), selected_date + timedelta(days=6-selected_date.weekday())
+        
         with st.expander("➕ Añadir Nueva Visita"):
             with st.form("new_visit_form", clear_on_submit=True):
+                # ... (código del formulario sin cambios)
                 col1, col2 = st.columns(2)
                 with col1:
                     new_fecha = st.date_input("Fecha", min_value=start, max_value=end)
@@ -160,38 +149,90 @@ def mostrar_planificador():
                                     st.balloons(); st.success(f"¡Felicidades! Eres el primero en visitar {new_poblacion}. ¡Has ganado el logro 'Explorador'!")
                                 supabase.table('visitas').insert({'usuario_id': st.session_state['usuario_id'], 'fecha': str(new_fecha), 'franja_horaria': new_franja, 'direccion_texto': new_poblacion, 'equipo': new_equipo, 'observaciones': new_observaciones, 'lat': lat, 'lon': lon, 'status': 'Propuesta'}).execute()
                                 st.success(f"¡Visita a '{new_poblacion}' añadida con éxito!"); st.rerun()
+
         st.markdown("---")
         st.subheader("Tus Visitas Propuestas para esta Semana")
-        response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).order('fecha').execute()
+        response = supabase.table('visitas').select('*').eq(
+            'usuario_id', st.session_state['usuario_id']
+        ).gte('fecha', start).lte('fecha', end).order('fecha').execute()
+        
         visitas_semana = response.data
-        if not visitas_semana: st.info("No tienes visitas propuestas para la semana seleccionada.")
+        ayuda_ya_solicitada = any(v.get('ayuda_solicitada') for v in visitas_semana)
+
+        if not visitas_semana:
+            st.info("No tienes visitas propuestas para la semana seleccionada.")
         else:
-            st.success("Puedes solicitar ayuda a Martín u ofrecer una visita al equipo para intercambiarla.")
             for visita in visitas_semana:
-                with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
-                    with col1:
-                        st.markdown(f"**📍 {visita['direccion_texto']}**"); st.write(f"**🗓️ {visita['fecha']}** | 🕒 {visita['franja_horaria']}")
-                    with col2:
-                        st.write(f"**Equipo:** {visita['equipo']}"); st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
-                    with col3:
-                        if visita.get('ayuda_solicitada'):
-                            if st.button("✔️ Ayuda Solicitada", key=f"cancel_{visita['id']}", type="primary", use_container_width=True, help="Cancelar la solicitud de ayuda"):
-                                supabase.table('visitas').update({'ayuda_solicitada': False}).eq('id', visita['id']).execute(); st.rerun()
-                        else:
-                            if st.button("🙋 Pedir Ayuda a Martín", key=f"ask_{visita['id']}", use_container_width=True, disabled=any(v.get('ayuda_solicitada') for v in visitas_semana), help="Solicitar que esta visita sea incluida en el plan de Martín"):
-                                supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute(); st.rerun()
-                    with col4:
-                        if visita.get('en_mercado'):
-                            if st.button("↩️ Retirar", key=f"unoffer_{visita['id']}", use_container_width=True, help="Retirar la visita del mercado"):
-                                supabase.table('visitas').update({'en_mercado': False}).eq('id', visita['id']).execute(); st.rerun()
-                        else:
-                            if st.button("🤝 Ofrecer", key=f"offer_{visita['id']}", use_container_width=True, help="Ofrecer esta visita al resto del equipo"):
-                                supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute(); st.rerun()
+                # --- INICIO DE LA LÓGICA DE EDICIÓN PARA COORDINADOR ---
+                if st.session_state.editing_visit_id == visita['id']:
+                    with st.form(key=f"edit_coord_form_{visita['id']}"):
+                        st.markdown(f"**Editando visita a: {visita['direccion_texto']}**")
+                        
+                        current_date = datetime.strptime(visita['fecha'], '%Y-%m-%d').date()
+                        franjas = HORAS_VIERNES if current_date.weekday() == 4 else HORAS_LUNES_JUEVES
+                        try:
+                            current_franja_index = franjas.index(visita['franja_horaria'])
+                        except ValueError:
+                            current_franja_index = 0
+
+                        new_fecha = st.date_input("Fecha", value=current_date, min_value=start, max_value=end)
+                        new_franja = st.selectbox("Franja Horaria", options=franjas, index=current_franja_index)
+                        new_equipo = st.text_input("Equipo", value=visita['equipo'])
+                        new_obs = st.text_area("Observaciones", value=visita['observaciones'])
+
+                        c1, c2 = st.columns(2)
+                        if c1.form_submit_button("💾 Guardar", use_container_width=True, type="primary"):
+                            update_data = {
+                                'fecha': str(new_fecha), 'franja_horaria': new_franja,
+                                'equipo': new_equipo, 'observaciones': new_obs
+                            }
+                            supabase.table('visitas').update(update_data).eq('id', visita['id']).execute()
+                            st.success("Visita actualizada.")
+                            st.session_state.editing_visit_id = None
+                            st.rerun()
+                        if c2.form_submit_button("✖️ Cancelar", use_container_width=True):
+                            st.session_state.editing_visit_id = None
+                            st.rerun()
+                else:
+                    with st.container(border=True):
+                        col1, col2, cols_botones = st.columns([2, 2, 2])
+                        with col1:
+                            st.markdown(f"**📍 {visita['direccion_texto']}**")
+                            st.write(f"**🗓️ {visita['fecha']}** | 🕒 {visita['franja_horaria']}")
+                        with col2:
+                            st.write(f"**Equipo:** {visita['equipo']}")
+                            st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
+                        
+                        with cols_botones:
+                            # Contenedor para los 4 botones
+                            b1, b2, b3, b4 = st.columns(4)
+                            with b1:
+                                if st.button("🙋", key=f"ask_{visita['id']}", help="Pedir Ayuda a Martín", disabled=ayuda_ya_solicitada, use_container_width=True):
+                                    supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute(); st.rerun()
+                            with b2:
+                                if st.button("🤝", key=f"offer_{visita['id']}", help="Ofrecer al Mercado", use_container_width=True):
+                                    supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute(); st.rerun()
+                            with b3:
+                                if st.button("✏️", key=f"edit_coord_{visita['id']}", help="Editar Visita", use_container_width=True):
+                                    st.session_state.editing_visit_id = visita['id']
+                                    st.rerun()
+                            with b4:
+                                if st.button("🗑️", key=f"del_coord_{visita['id']}", help="Eliminar Visita", use_container_width=True):
+                                    supabase.table('visitas').delete().eq('id', visita['id']).execute()
+                                    st.success("Visita eliminada.")
+                                    st.rerun()
+
+                            # Mostrar insignias si la visita está en el mercado o con ayuda solicitada
+                            if visita.get('ayuda_solicitada'):
+                                st.success("✔️ Ayuda Solicitada", icon="🙋")
+                            if visita.get('en_mercado'):
+                                st.info("✔️ En Mercado", icon="🤝")
+                # --- FIN DE LA LÓGICA DE EDICIÓN ---
 
         if st.session_state.get('rol') in ['supervisor', 'admin']:
             st.markdown("---")
             st.subheader("📋 Mis Visitas Asignadas")
+            # ... (código sin cambios)
             try:
                 assigned_res = supabase.table('visitas').select('*, coordinador:usuario_id(nombre_completo)').eq('status', 'Asignada a Supervisor').order('fecha_asignada').execute()
                 assigned_visits = assigned_res.data
