@@ -1,10 +1,10 @@
-# Fichero: planificador.py (Versión con geocodificación restringida a Cataluña)
+# Fichero: planificador.py (Versión con geocodificación de Google Maps)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
 import re
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+# Ya no necesitamos geopy, ahora usamos googlemaps
+import googlemaps
 from database import supabase
 import folium
 from folium.features import DivIcon
@@ -15,8 +15,11 @@ from streamlit_calendar import calendar
 HORAS_LUNES_JUEVES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "15:00-16:00", "16:00-17:00", "08:00-10:00", "10:00-12:00", "12:00-14:00", "15:00-17:00"]
 HORAS_VIERNES = ["08:00-09:00", "09:00-10:00", "10:00-11:00", "11:00-12:00", "12:00-13:00", "13:00-14:00", "14:00-15:00", "08:00-10:00", "10:00-12:00", "12:00-14:00"]
 CATALONIA_CENTER = [41.8795, 1.7887]
-# Recuadro geográfico que engloba Cataluña para restringir las búsquedas
-CATALONIA_VIEWBOX = [[42.86, 3.32], [40.52, 0.18]] # [esquina Noreste], [esquina Suroeste]
+# Recuadro para las búsquedas de Google, para que priorice resultados en Cataluña
+CATALONIA_BOUNDS = {
+    "northeast": {"lat": 42.86, "lng": 3.32},
+    "southwest": {"lat": 40.52, "lng": 0.18},
+}
 
 def get_initials(full_name: str) -> str:
     if not full_name or not isinstance(full_name, str): return "??"
@@ -26,37 +29,31 @@ def get_initials(full_name: str) -> str:
     elif len(parts) == 1: return parts[0][0].upper()
     return "??"
 
-# --- FUNCIÓN DE GEOCODIFICACIÓN MODIFICADA ---
+# --- FUNCIÓN DE GEOCODIFICACIÓN ACTUALIZADA A GOOGLE MAPS ---
 @st.cache_data(ttl=60*60*24)
 def geocode_address(address: str):
     """
-    Geocodifica una dirección restringiendo la búsqueda a Cataluña.
+    Geocodifica una dirección usando la API de Google Maps.
     Devuelve (lat, lon, error_message).
     """
     if not address or pd.isna(address): 
         return None, None, "La población no puede estar vacía."
     try:
-        geolocator = Nominatim(user_agent=f"wfi_planner_app/{st.session_state.get('usuario_id', 'unknown')}")
+        # Inicializamos el cliente de Google Maps con la clave de los secretos
+        gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
         
-        # Búsqueda restringida al recuadro de Cataluña
-        location = geolocator.geocode(
-            query=address,
-            viewbox=CATALONIA_VIEWBOX,
-            bounded=True, # Importante: esto obliga a que el resultado esté DENTRO del recuadro
-            timeout=10
-        )
+        # Hacemos la llamada a la API, priorizando la región y el recuadro de Cataluña
+        geocode_result = gmaps.geocode(address, region='ES', bounds=CATALONIA_BOUNDS)
         
-        if location:
-            return location.latitude, location.longitude, None
+        if geocode_result:
+            lat = geocode_result[0]['geometry']['location']['lat']
+            lon = geocode_result[0]['geometry']['location']['lng']
+            return lat, lon, None
         else:
-            return None, None, f"No se pudo encontrar '{address}' dentro de Cataluña. Revisa que el nombre sea correcto."
+            return None, None, f"Google Maps no pudo encontrar la población '{address}'."
             
-    except GeocoderTimedOut:
-        return None, None, "El servicio de mapas ha tardado demasiado en responder. Inténtalo de nuevo en unos segundos."
-    except GeocoderServiceError as e:
-        return None, None, f"Error del servicio de mapas: {e}. Puede que el servicio esté temporalmente caído."
     except Exception as e:
-        return None, None, f"Ha ocurrido un error inesperado al geocodificar: {e}"
+        return None, None, f"Ha ocurrido un error con la API de Google Maps: {e}"
 
 def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
@@ -133,6 +130,7 @@ def mostrar_planificador():
             calendar(events=events, options={"headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,timeGridWeek"}, "initialView": "timeGridWeek", "locale": "es", "initialDate": start_cal.isoformat()}, custom_css=calendar_css, key=f"cal_{start_cal}")
 
     with tab_planificar:
+        # ... (código de esta pestaña no cambia, solo la función geocode_address que llama)
         today_plan = date.today()
         start_of_next_week_plan = today_plan + timedelta(days=-today.weekday(), weeks=1)
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
