@@ -8,6 +8,7 @@ from database import supabase
 
 # --- CONSTANTES ---
 DURACION_VISITA_SEGUNDOS = 45 * 60 # 45 minutos por visita
+LIMITE_VISITAS_A_PLANIFICAR = 8 # Límite para evitar colapso de rendimiento
 
 # --- FUNCIONES AUXILIARES ---
 def get_daily_time_budget(weekday):
@@ -30,17 +31,28 @@ def calcular_ruta_optima(punto_inicio, visitas_del_dia, gmaps, time_budget):
                 origen_actual = punto_inicio
                 
                 # Viaje inicial + primera visita
-                tiempo_total += gmaps.distance_matrix(origen_actual, orden[0]['direccion_texto'])['rows'][0]['elements'][0]['duration']['value']
+                try:
+                    tiempo_total += gmaps.distance_matrix(origen_actual, orden[0]['direccion_texto'])['rows'][0]['elements'][0]['duration']['value']
+                except (IndexError, KeyError): # Si la API no devuelve ruta, saltamos esta permutación
+                    continue
                 tiempo_total += DURACION_VISITA_SEGUNDOS
                 origen_actual = orden[0]['direccion_texto']
                 
                 # Viajes intermedios + resto de visitas
+                ruta_valida = True
                 for i in range(len(orden) - 1):
                     destino_siguiente = orden[i+1]['direccion_texto']
-                    tiempo_total += gmaps.distance_matrix(origen_actual, destino_siguiente)['rows'][0]['elements'][0]['duration']['value']
+                    try:
+                        tiempo_total += gmaps.distance_matrix(origen_actual, destino_siguiente)['rows'][0]['elements'][0]['duration']['value']
+                    except (IndexError, KeyError):
+                        ruta_valida = False
+                        break
                     tiempo_total += DURACION_VISITA_SEGUNDOS
                     origen_actual = destino_siguiente
                 
+                if not ruta_valida:
+                    continue
+
                 # Si la ruta es válida y mejor que la anterior, la guardamos
                 if tiempo_total <= time_budget:
                     puntuacion_actual = (len(orden), tiempo_total)
@@ -63,14 +75,49 @@ def mostrar_planificador_coordinador():
     # --- 1. CONFIGURACIÓN ---
     st.subheader("1. Configura tu semana")
     
-    # Próxima semana
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
-    dias_semana_siguiente = [start_of_next_week + timedelta(days=i) for i in range(5)]
+    
+    # Cargar visitas pendientes del coordinador
+    try:
+        response = supabase.table('visitas').select('*').eq(
+            'usuario_id', st.session_state['usuario_id']
+        ).eq(
+            'status', 'Propuesta'
+        ).gte(
+            'fecha', start_of_next_week.isoformat()
+        ).lte(
+            'fecha', (start_of_next_week + timedelta(days=6)).isoformat()
+        ).execute()
+        visitas_pendientes_raw = response.data
+    except Exception as e:
+        st.error(f"No se pudieron cargar las visitas pendientes: {e}")
+        st.stop()
+    
+    if not visitas_pendientes_raw:
+        st.info("No tienes visitas propuestas para la próxima semana para planificar."); st.stop()
 
+    df_visitas = pd.DataFrame(visitas_pendientes_raw)
+    df_visitas['display_name'] = df_visitas['direccion_texto'] + " (" + df_visitas['equipo'] + ")"
+
+    # Selección de visitas
+    st.info(f"Selecciona las visitas que quieres incluir en la optimización (máximo {LIMITE_VISITAS_A_PLANIFICAR}).")
+    visitas_seleccionadas_display = st.multiselect(
+        "Visitas pendientes para la próxima semana:",
+        options=df_visitas['display_name'].tolist()
+    )
+
+    if len(visitas_seleccionadas_display) > LIMITE_VISITAS_A_PLANIFICAR:
+        st.error(f"Has seleccionado {len(visitas_seleccionadas_display)} visitas. Por favor, selecciona un máximo de {LIMITE_VISITAS_A_PLANIFICAR}.")
+        st.stop()
+
+    visitas_a_planificar_ids = df_visitas[df_visitas['display_name'].isin(visitas_seleccionadas_display)]['id'].tolist()
+    visitas_a_planificar = [v for v in visitas_pendientes_raw if v['id'] in visitas_a_planificar_ids]
+    
     punto_inicio = st.text_input("📍 Introduce tu punto de partida para la jornada:", placeholder="Ej: Carrer de la Riera, 7, Cornellà de Llobregat")
     num_dias = st.selectbox("🗓️ ¿En cuántos días quieres planificar?", [1, 2])
 
+    dias_semana_siguiente = [start_of_next_week + timedelta(days=i) for i in range(5)]
     fechas_seleccionadas = []
     if num_dias == 1:
         fecha_1 = st.date_input("Elige el día de trabajo", value=dias_semana_siguiente[0], min_value=dias_semana_siguiente[0], max_value=dias_semana_siguiente[4])
@@ -90,23 +137,10 @@ def mostrar_planificador_coordinador():
     if st.button("🚀 Calcular Plan Óptimo", type="primary", use_container_width=True):
         if not punto_inicio:
             st.warning("Por favor, introduce un punto de partida."); st.stop()
+        if not visitas_a_planificar:
+            st.warning("Por favor, selecciona al menos una visita para planificar."); st.stop()
 
-        with st.spinner("Buscando tus visitas y calculando las mejores rutas..."):
-            # Cargar visitas del coordinador para la próxima semana
-            response = supabase.table('visitas').select('*').eq(
-                'usuario_id', st.session_state['usuario_id']
-            ).eq(
-                'status', 'Propuesta' # Solo las no asignadas
-            ).gte(
-                'fecha', start_of_next_week.isoformat()
-            ).lte(
-                'fecha', (start_of_next_week + timedelta(days=6)).isoformat()
-            ).execute()
-            
-            visitas_pendientes = response.data
-            if not visitas_pendientes:
-                st.info("No tienes visitas propuestas para la próxima semana para planificar."); st.stop()
-            
+        with st.spinner("Buscando las mejores rutas..."):
             st.session_state.plan_propuesto = None
             gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
             plan_final = {}
@@ -114,7 +148,7 @@ def mostrar_planificador_coordinador():
 
             if num_dias == 1:
                 time_budget = get_daily_time_budget(fechas_seleccionadas[0].weekday())
-                ruta, tiempo = calcular_ruta_optima(punto_inicio, visitas_pendientes, gmaps, time_budget)
+                ruta, tiempo = calcular_ruta_optima(punto_inicio, visitas_a_planificar, gmaps, time_budget)
                 if ruta:
                     plan_final[fechas_seleccionadas[0]] = {'ruta': ruta, 'tiempo_total': tiempo}
                     visitas_asignadas_ids.update([v['id'] for v in ruta])
@@ -124,10 +158,10 @@ def mostrar_planificador_coordinador():
                 max_visitas_logradas = -1
                 
                 # Iteramos sobre todas las formas de dividir las visitas en 2 grupos
-                for i in range(1, len(visitas_pendientes) // 2 + 1):
-                    for combo_dia1 in itertools.combinations(visitas_pendientes, i):
+                for i in range(len(visitas_a_planificar) // 2 + 1):
+                    for combo_dia1 in itertools.combinations(visitas_a_planificar, i):
                         visitas_dia1 = list(combo_dia1)
-                        visitas_dia2 = [v for v in visitas_pendientes if v not in visitas_dia1]
+                        visitas_dia2 = [v for v in visitas_a_planificar if v not in visitas_dia1]
                         
                         # Probamos la asignación en ambos sentidos (combo a dia 1 / combo a dia 2)
                         for d1, d2 in [(fechas_seleccionadas[0], fechas_seleccionadas[1]), (fechas_seleccionadas[1], fechas_seleccionadas[0])]:
@@ -149,7 +183,7 @@ def mostrar_planificador_coordinador():
                         plan_final[fecha] = {'ruta': ruta, 'tiempo_total': tiempo_final}
                         visitas_asignadas_ids.update([v['id'] for v in ruta])
             
-            visitas_no_asignadas = [v for v in visitas_pendientes if v['id'] not in visitas_asignadas_ids]
+            visitas_no_asignadas = [v for v in visitas_a_planificar if v['id'] not in visitas_asignadas_ids]
             st.session_state.plan_propuesto = {'plan': plan_final, 'no_asignadas': visitas_no_asignadas, 'punto_inicio': punto_inicio}
             st.rerun()
 
@@ -157,32 +191,33 @@ def mostrar_planificador_coordinador():
     if 'plan_propuesto' in st.session_state and st.session_state.plan_propuesto:
         st.markdown("---")
         st.subheader("✅ Propuesta de Planificación Óptima")
-        st.success("Este es un plan sugerido. Para confirmarlo, **asigna las fechas y horas manualmente en la pestaña 'Gestionar Visitas'**.")
+        st.success("Este es un plan sugerido. Para confirmarlo, **asigna las fechas y horas manualmente en la pestaña 'Planificador de Visitas'**.")
 
         plan_data = st.session_state.plan_propuesto
         if not plan_data['plan']:
             st.warning("No se ha podido generar un plan que encaje en los días seleccionados con las visitas disponibles.")
         
+        gmaps_client = googlemaps.Client(key=st.secrets["google"]["api_key"])
         for fecha, datos_ruta in sorted(plan_data['plan'].items()):
             with st.expander(f"**🗓️ Plan para el {fecha.strftime('%A, %d/%m/%Y')}** ({len(datos_ruta['ruta'])} visitas)", expanded=True):
                 hora_actual = datetime.combine(fecha, time(8, 0))
                 origen = plan_data['punto_inicio']
                 
                 for visita in datos_ruta['ruta']:
-                    gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
-                    tiempo_viaje_seg = gmaps.distance_matrix(origen, visita['direccion_texto'])['rows'][0]['elements'][0]['duration']['value']
-                    hora_actual += timedelta(seconds=tiempo_viaje_seg)
-                    
-                    st.markdown(f"- **🕣 {hora_actual.strftime('%H:%M')}** - **{visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
-                    
-                    hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
-                    origen = visita['direccion_texto']
-                
+                    try:
+                        tiempo_viaje_seg = gmaps_client.distance_matrix(origen, visita['direccion_texto'])['rows'][0]['elements'][0]['duration']['value']
+                        hora_actual += timedelta(seconds=tiempo_viaje_seg)
+                        st.markdown(f"- **🕣 {hora_actual.strftime('%H:%M')}** - **{visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
+                        hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
+                        origen = visita['direccion_texto']
+                    except (IndexError, KeyError):
+                         st.warning(f"No se pudo calcular la hora de llegada para {visita['direccion_texto']}. Ruta no encontrada.")
+
                 tiempo_total_horas = plan_data['plan'][fecha]['tiempo_total'] / 3600
                 st.info(f"🕣 Tiempo total estimado de jornada: **{tiempo_total_horas:.2f} horas**.")
 
         if plan_data['no_asignadas']:
             st.markdown("---")
-            st.warning("Visitas no incluidas en el plan (por falta de tiempo):")
+            st.warning("Visitas no incluidas en el plan (por falta de tiempo o de ruta):")
             for v in plan_data['no_asignadas']:
                 st.markdown(f"- {v['direccion_texto']} (Equipo: {v['equipo']})")

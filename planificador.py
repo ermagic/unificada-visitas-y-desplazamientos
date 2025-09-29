@@ -119,7 +119,7 @@ def mostrar_planificador():
 
     with tab_planificar:
         today_plan = date.today()
-        start_of_next_week_plan = today_plan + timedelta(days=-today.weekday(), weeks=1)
+        start_of_next_week_plan = today_plan + timedelta(days=-today_plan.weekday(), weeks=1)
         selected_date = st.date_input("Selecciona una semana para planificar", value=start_of_next_week_plan, format="DD/MM/YYYY", key="date_plan")
         start, end = selected_date - timedelta(days=selected_date.weekday()), selected_date + timedelta(days=6-selected_date.weekday())
         
@@ -144,7 +144,8 @@ def mostrar_planificador():
                             if error_msg:
                                 st.error(error_msg)
                             else:
-                                if not supabase.table('visitas').select('id').ilike('direccion_texto', f"%{new_poblacion}%").limit(1).execute().data:
+                                # --- LÍNEA CORREGIDA ---
+                                if not supabase.table('visitas').select('id').eq('direccion_texto', new_poblacion).limit(1).execute().data:
                                     supabase.table('logros').insert({'usuario_id': st.session_state['usuario_id'], 'logro_tipo': 'explorador', 'fecha_logro': str(date.today()), 'detalles': {'poblacion': new_poblacion}}).execute()
                                     st.balloons(); st.success(f"¡Felicidades! Eres el primero en visitar {new_poblacion}. ¡Has ganado el logro 'Explorador'!")
                                 supabase.table('visitas').insert({'usuario_id': st.session_state['usuario_id'], 'fecha': str(new_fecha), 'franja_horaria': new_franja, 'direccion_texto': new_poblacion, 'equipo': new_equipo, 'observaciones': new_observaciones, 'lat': lat, 'lon': lon, 'status': 'Propuesta'}).execute()

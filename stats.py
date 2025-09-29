@@ -11,6 +11,7 @@ from streamlit_calendar import calendar
 def calcular_kilometraje_equipo(_start_date, _end_date):
     """
     Calcula el kilometraje total y por coordinador para un rango de fechas.
+    Utiliza la API Directions con waypoints para optimizar las llamadas.
     """
     try:
         visitas_res = supabase.table('visitas').select('*, coordinador:usuario_id(*)').gte('fecha_asignada', _start_date).lte('fecha_asignada', _end_date).execute()
@@ -31,23 +32,47 @@ def calcular_kilometraje_equipo(_start_date, _end_date):
         km_por_coordinador = {}
 
         for (coordinador, fecha), group in df_visitas.groupby(['nombre_coordinador', 'fecha_asignada']):
+            if group.empty:
+                continue
+
             punto_partida = group['punto_partida'].iloc[0]
-            # Ordenar las visitas por la hora asignada para una ruta lógica
             group['hora_asignada'] = pd.to_datetime(group['hora_asignada'], format='%H:%M', errors='coerce').dt.time
             group.sort_values('hora_asignada', inplace=True)
             
-            direcciones = [punto_partida] + group['direccion_texto'].tolist()
-            total_km_dia = 0
+            direcciones = group['direccion_texto'].tolist()
             
-            for i in range(len(direcciones) - 1):
-                origen = direcciones[i]
-                destino = direcciones[i+1]
-                if origen and destino and origen != destino:
+            # Si solo hay una visita, es un viaje de ida y vuelta (A->B)
+            if len(direcciones) == 1:
+                origen = punto_partida
+                destino = direcciones[0]
+                try:
                     dist_matrix = gmaps.distance_matrix(origen, destino, mode="driving")
-                    km_tramo = dist_matrix['rows'][0]['elements'][0].get('distance', {}).get('value', 0) / 1000
-                    total_km_dia += km_tramo
+                    km_dia = dist_matrix['rows'][0]['elements'][0].get('distance', {}).get('value', 0) / 1000
+                    km_por_coordinador[coordinador] = km_por_coordinador.get(coordinador, 0) + km_dia
+                except Exception:
+                    continue # Ignorar si hay un error con esta ruta
             
-            km_por_coordinador[coordinador] = km_por_coordinador.get(coordinador, 0) + total_km_dia
+            # Si hay más de una visita, usamos la API Directions con waypoints (A->B->C->...)
+            else:
+                origen = punto_partida
+                destino = direcciones[-1]
+                waypoints = direcciones[:-1]
+
+                try:
+                    directions_result = gmaps.directions(origen, destino, waypoints=waypoints, mode="driving")
+                    if not directions_result:
+                        continue
+                    
+                    total_km_dia = 0
+                    for leg in directions_result[0]['legs']:
+                        total_km_dia += leg['distance']['value']
+                    
+                    km_por_coordinador[coordinador] = km_por_coordinador.get(coordinador, 0) + (total_km_dia / 1000)
+                except Exception:
+                    continue # Ignorar si hay un error con esta ruta
+
+        if not km_por_coordinador:
+            return 0, pd.DataFrame()
 
         df_km = pd.DataFrame(list(km_por_coordinador.items()), columns=['Coordinador', 'Kilómetros']).sort_values('Kilómetros', ascending=False)
         total_km = df_km['Kilómetros'].sum()
@@ -132,4 +157,3 @@ def mostrar_stats():
                 st.dataframe(df_km, use_container_width=True, hide_index=True)
             else:
                 st.info("No hay datos de kilometraje para el periodo seleccionado.")
-
