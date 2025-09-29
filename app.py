@@ -1,4 +1,4 @@
-# Fichero: app.py (Versión con Mercado de Visitas, Logros y Nombre en Anuncios)
+# Fichero: app.py (Versión con Mercado de Visitas y Logros)
 import streamlit as st
 from auth import verificar_usuario_supabase
 from desplazamientos import mostrar_calculadora_avanzada
@@ -42,21 +42,14 @@ else:
         # --- PANEL DE ANUNCIOS ---
         st.subheader("📢 Anuncios")
         
-        anuncios = [] # <-- LÍNEA AÑADIDA PARA SOLUCIONAR EL ERROR
+        anuncios = [] 
         try:
-            # MODIFICACIÓN 1: Hacemos un "join" para obtener también el nombre del autor
-            response = supabase.table('anuncios').select(
-                '*, autor:usuario_id(nombre_completo)'
-            ).eq('activo', True).order('created_at', desc=True).execute()
+            response = supabase.table('anuncios').select('*').eq('activo', True).order('created_at', desc=True).execute()
             anuncios = response.data
             
             if anuncios:
                 for anuncio in anuncios:
-                    # MODIFICACIÓN 2: Extraemos el nombre y lo mostramos
-                    autor_info = anuncio.get('autor')
-                    autor_nombre = autor_info.get('nombre_completo', 'Sistema') if isinstance(autor_info, dict) else 'Sistema'
-                    mensaje_con_autor = f"{anuncio['mensaje']}\n\n*— {autor_nombre}*"
-                    st.info(mensaje_con_autor)
+                    st.info(anuncio['mensaje'])
             else:
                 st.info("No hay anuncios activos.")
         except Exception as e:
@@ -68,11 +61,9 @@ else:
                     nuevo_mensaje = st.text_area("Nuevo anuncio:")
                     if st.form_submit_button("Publicar Anuncio"):
                         if nuevo_mensaje:
-                            # MODIFICACIÓN 3: Guardamos el ID del usuario que crea el anuncio
                             supabase.table('anuncios').insert({
                                 'mensaje': nuevo_mensaje,
-                                'activo': True,
-                                'usuario_id': st.session_state['usuario_id'] # <-- AÑADIDO
+                                'activo': True
                             }).execute()
                             st.rerun()
                 
@@ -123,3 +114,9 @@ else:
     elif pagina_seleccionada == "Gestión de Usuarios":
         if st.session_state.rol == 'admin': mostrar_panel_admin()
         else: st.error("No tienes permisos para acceder a esta sección.")
+
+---
+
+**Nota sobre la base de datos:**
+
+Para mantener tu base de datos limpia, ahora puedes **eliminar la columna `usuario_id`** de tu tabla `anuncios` en Supabase, ya que este código no la volverá a usar.
