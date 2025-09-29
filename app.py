@@ -114,9 +114,3 @@ else:
     elif pagina_seleccionada == "Gestión de Usuarios":
         if st.session_state.rol == 'admin': mostrar_panel_admin()
         else: st.error("No tienes permisos para acceder a esta sección.")
-
----
-
-**Nota sobre la base de datos:**
-
-Para mantener tu base de datos limpia, ahora puedes **eliminar la columna `usuario_id`** de tu tabla `anuncios` en Supabase, ya que este código no la volverá a usar.
