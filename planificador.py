@@ -245,9 +245,16 @@ def mostrar_planificador():
                                 with b4:
                                     # CORRECCIÓN: Ahora puede eliminar aunque esté en mercado
                                     if st.button("🗑️", key=f"del_coord_{visita['id']}", help="Eliminar Visita", use_container_width=True):
-                                        supabase.table('visitas').delete().eq('id', visita['id']).execute()
-                                        st.success("Visita eliminada.")
-                                        st.rerun()
+                                        try:
+                                            result = supabase.table('visitas').delete().eq('id', visita['id']).execute()
+                                            if result.data:
+                                                st.success("Visita eliminada.")
+                                                st.rerun()
+                                            else:
+                                                st.error("No se pudo eliminar la visita. Verifica los permisos en Supabase.")
+                                        except Exception as e:
+                                            st.error(f"Error al eliminar: {str(e)}")
+                                            st.info("Verifica que RLS esté configurado correctamente en la tabla 'visitas'.")
 
                                 # Mostrar insignias si la visita está en el mercado o con ayuda solicitada
                                 if visita.get('ayuda_solicitada'):
@@ -263,9 +270,16 @@ def mostrar_planificador():
                                         st.rerun()
                                 with b2:
                                     if st.button("🗑️", key=f"del_admin_{visita['id']}", help="Eliminar Visita", use_container_width=True):
-                                        supabase.table('visitas').delete().eq('id', visita['id']).execute()
-                                        st.success(f"Visita de {nombre_coordinador} eliminada.")
-                                        st.rerun()
+                                        try:
+                                            result = supabase.table('visitas').delete().eq('id', visita['id']).execute()
+                                            if result.data:
+                                                st.success(f"Visita de {nombre_coordinador} eliminada.")
+                                                st.rerun()
+                                            else:
+                                                st.error("No se pudo eliminar la visita. Verifica los permisos en Supabase.")
+                                        except Exception as e:
+                                            st.error(f"Error al eliminar: {str(e)}")
+                                            st.info("Verifica que RLS esté configurado correctamente en la tabla 'visitas'.")
 
         if st.session_state.get('rol') in ['supervisor', 'admin']:
             st.markdown("---")
