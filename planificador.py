@@ -1,4 +1,4 @@
-# Fichero: planificador.py (Versión final con edición/eliminación para coordinadores)
+# Fichero: planificador.py (Versión con eliminación flexible corregida)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime
@@ -43,6 +43,18 @@ def geocode_address(address: str):
     except Exception as e:
         return None, None, f"Ha ocurrido un error con la API de Google Maps: {e}"
 
+def puede_eliminar_visita(visita, usuario_id, rol):
+    """Determina si el usuario puede eliminar una visita"""
+    # Admins y supervisores pueden eliminar cualquier visita
+    if rol in ['admin', 'supervisor']:
+        return True
+    
+    # Coordinadores solo pueden eliminar sus propias visitas
+    if rol == 'coordinador' and visita['usuario_id'] == usuario_id:
+        return True
+    
+    return False
+
 def mostrar_planificador():
     st.header("Planificador de Visitas 🗓️")
     rol_usuario = st.session_state.get('rol', 'coordinador')
@@ -50,11 +62,10 @@ def mostrar_planificador():
     if 'editing_visit_id' not in st.session_state:
         st.session_state.editing_visit_id = None
 
-    planificar_tab_title = "✍️ Gestionar Visitas" if rol_usuario in ['supervisor', 'admin'] else "✍️ Planificar Mis Visitas"
+    planificar_tab_title = "✏️ Gestionar Visitas" if rol_usuario in ['supervisor', 'admin'] else "✏️ Planificar Mis Visitas"
     tab_global, tab_planificar = st.tabs(["🌍 Vista Global", planificar_tab_title])
 
     with tab_global:
-        # ... (código sin cambios)
         st.subheader("Panel de Control de Visitas de la Semana")
         today = date.today()
         start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
@@ -125,7 +136,6 @@ def mostrar_planificador():
         
         with st.expander("➕ Añadir Nueva Visita"):
             with st.form("new_visit_form", clear_on_submit=True):
-                # ... (código del formulario sin cambios)
                 col1, col2 = st.columns(2)
                 with col1:
                     new_fecha = st.date_input("Fecha", min_value=start, max_value=end)
@@ -144,7 +154,6 @@ def mostrar_planificador():
                             if error_msg:
                                 st.error(error_msg)
                             else:
-                                # --- LÍNEA CORREGIDA ---
                                 if not supabase.table('visitas').select('id').eq('direccion_texto', new_poblacion).limit(1).execute().data:
                                     supabase.table('logros').insert({'usuario_id': st.session_state['usuario_id'], 'logro_tipo': 'explorador', 'fecha_logro': str(date.today()), 'detalles': {'poblacion': new_poblacion}}).execute()
                                     st.balloons(); st.success(f"¡Felicidades! Eres el primero en visitar {new_poblacion}. ¡Has ganado el logro 'Explorador'!")
@@ -152,19 +161,32 @@ def mostrar_planificador():
                                 st.success(f"¡Visita a '{new_poblacion}' añadida con éxito!"); st.rerun()
 
         st.markdown("---")
-        st.subheader("Tus Visitas Propuestas para esta Semana")
-        response = supabase.table('visitas').select('*').eq(
-            'usuario_id', st.session_state['usuario_id']
-        ).gte('fecha', start).lte('fecha', end).order('fecha').execute()
+        
+        # Determinar qué visitas mostrar según el rol
+        if rol_usuario in ['supervisor', 'admin']:
+            st.subheader("Todas las Visitas Propuestas para esta Semana")
+            response = supabase.table('visitas').select('*, usuario:usuario_id(nombre_completo)').gte('fecha', start).lte('fecha', end).order('fecha').execute()
+        else:
+            st.subheader("Tus Visitas Propuestas para esta Semana")
+            response = supabase.table('visitas').select('*').eq('usuario_id', st.session_state['usuario_id']).gte('fecha', start).lte('fecha', end).order('fecha').execute()
         
         visitas_semana = response.data
         ayuda_ya_solicitada = any(v.get('ayuda_solicitada') for v in visitas_semana)
 
         if not visitas_semana:
-            st.info("No tienes visitas propuestas para la semana seleccionada.")
+            st.info("No hay visitas propuestas para la semana seleccionada.")
         else:
             for visita in visitas_semana:
-                # --- INICIO DE LA LÓGICA DE EDICIÓN PARA COORDINADOR ---
+                # Determinar el nombre del coordinador
+                if rol_usuario in ['supervisor', 'admin']:
+                    coordinador_info = visita.get('usuario', {})
+                    nombre_coordinador = coordinador_info.get('nombre_completo', 'Desconocido') if isinstance(coordinador_info, dict) else 'Desconocido'
+                else:
+                    nombre_coordinador = st.session_state['nombre_completo']
+                
+                # Verificar si puede eliminar esta visita
+                puede_eliminar = puede_eliminar_visita(visita, st.session_state['usuario_id'], rol_usuario)
+                
                 if st.session_state.editing_visit_id == visita['id']:
                     with st.form(key=f"edit_coord_form_{visita['id']}"):
                         st.markdown(f"**Editando visita a: {visita['direccion_texto']}**")
@@ -199,41 +221,55 @@ def mostrar_planificador():
                         col1, col2, cols_botones = st.columns([2, 2, 2])
                         with col1:
                             st.markdown(f"**📍 {visita['direccion_texto']}**")
-                            st.write(f"**🗓️ {visita['fecha']}** | 🕒 {visita['franja_horaria']}")
+                            st.write(f"**🗓️ {visita['fecha']}** | 🕐 {visita['franja_horaria']}")
                         with col2:
                             st.write(f"**Equipo:** {visita['equipo']}")
+                            if rol_usuario in ['supervisor', 'admin']:
+                                st.caption(f"Coordinador: {nombre_coordinador}")
                             st.caption(f"Obs: {visita['observaciones'] or 'Ninguna'}")
                         
                         with cols_botones:
-                            # Contenedor para los 4 botones
-                            b1, b2, b3, b4 = st.columns(4)
-                            with b1:
-                                if st.button("🙋", key=f"ask_{visita['id']}", help="Pedir Ayuda a Martín", disabled=ayuda_ya_solicitada, use_container_width=True):
-                                    supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute(); st.rerun()
-                            with b2:
-                                if st.button("🤝", key=f"offer_{visita['id']}", help="Ofrecer al Mercado", use_container_width=True):
-                                    supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute(); st.rerun()
-                            with b3:
-                                if st.button("✏️", key=f"edit_coord_{visita['id']}", help="Editar Visita", use_container_width=True):
-                                    st.session_state.editing_visit_id = visita['id']
-                                    st.rerun()
-                            with b4:
-                                if st.button("🗑️", key=f"del_coord_{visita['id']}", help="Eliminar Visita", use_container_width=True):
-                                    supabase.table('visitas').delete().eq('id', visita['id']).execute()
-                                    st.success("Visita eliminada.")
-                                    st.rerun()
+                            # Botones según el rol y estado de la visita
+                            if rol_usuario == 'coordinador':
+                                b1, b2, b3, b4 = st.columns(4)
+                                with b1:
+                                    if st.button("🙋", key=f"ask_{visita['id']}", help="Pedir Ayuda a Martín", disabled=ayuda_ya_solicitada, use_container_width=True):
+                                        supabase.table('visitas').update({'ayuda_solicitada': True}).eq('id', visita['id']).execute(); st.rerun()
+                                with b2:
+                                    if st.button("🤝", key=f"offer_{visita['id']}", help="Ofrecer al Mercado", use_container_width=True):
+                                        supabase.table('visitas').update({'en_mercado': True}).eq('id', visita['id']).execute(); st.rerun()
+                                with b3:
+                                    if st.button("✏️", key=f"edit_coord_{visita['id']}", help="Editar Visita", use_container_width=True):
+                                        st.session_state.editing_visit_id = visita['id']
+                                        st.rerun()
+                                with b4:
+                                    # CORRECCIÓN: Ahora puede eliminar aunque esté en mercado
+                                    if st.button("🗑️", key=f"del_coord_{visita['id']}", help="Eliminar Visita", use_container_width=True):
+                                        supabase.table('visitas').delete().eq('id', visita['id']).execute()
+                                        st.success("Visita eliminada.")
+                                        st.rerun()
 
-                            # Mostrar insignias si la visita está en el mercado o con ayuda solicitada
-                            if visita.get('ayuda_solicitada'):
-                                st.success("✔️ Ayuda Solicitada", icon="🙋")
-                            if visita.get('en_mercado'):
-                                st.info("✔️ En Mercado", icon="🤝")
-                # --- FIN DE LA LÓGICA DE EDICIÓN ---
+                                # Mostrar insignias si la visita está en el mercado o con ayuda solicitada
+                                if visita.get('ayuda_solicitada'):
+                                    st.success("✔️ Ayuda Solicitada", icon="🙋")
+                                if visita.get('en_mercado'):
+                                    st.info("✔️ En Mercado", icon="🤝")
+                            
+                            elif rol_usuario in ['supervisor', 'admin']:
+                                b1, b2 = st.columns(2)
+                                with b1:
+                                    if st.button("✏️", key=f"edit_admin_{visita['id']}", help="Editar Visita", use_container_width=True):
+                                        st.session_state.editing_visit_id = visita['id']
+                                        st.rerun()
+                                with b2:
+                                    if st.button("🗑️", key=f"del_admin_{visita['id']}", help="Eliminar Visita", use_container_width=True):
+                                        supabase.table('visitas').delete().eq('id', visita['id']).execute()
+                                        st.success(f"Visita de {nombre_coordinador} eliminada.")
+                                        st.rerun()
 
         if st.session_state.get('rol') in ['supervisor', 'admin']:
             st.markdown("---")
             st.subheader("📋 Mis Visitas Asignadas")
-            # ... (código sin cambios)
             try:
                 assigned_res = supabase.table('visitas').select('*, coordinador:usuario_id(nombre_completo)').eq('status', 'Asignada a Supervisor').order('fecha_asignada').execute()
                 assigned_visits = assigned_res.data
