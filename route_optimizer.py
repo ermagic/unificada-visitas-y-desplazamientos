@@ -1,0 +1,260 @@
+# Fichero: route_optimizer.py - Optimización de rutas eficiente con caché
+import googlemaps
+from datetime import datetime, timedelta
+from database import supabase
+import streamlit as st
+
+class RouteOptimizer:
+    def __init__(self):
+        self.gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
+        self.cache_ttl_days = 30  # Tiempo de vida del caché
+    
+    def get_route_from_cache(self, origen, destino):
+        """Intenta recuperar una ruta del caché"""
+        try:
+            cutoff_date = (datetime.now() - timedelta(days=self.cache_ttl_days)).isoformat()
+            
+            response = supabase.table('rutas_cache').select('*').eq(
+                'origen', origen
+            ).eq(
+                'destino', destino
+            ).gte(
+                'fecha_calculo', cutoff_date
+            ).limit(1).execute()
+            
+            if response.data:
+                return response.data[0]['distancia_metros'], response.data[0]['duracion_segundos']
+            
+            return None, None
+        except:
+            return None, None
+    
+    def save_route_to_cache(self, origen, destino, distancia, duracion):
+        """Guarda una ruta en el caché"""
+        try:
+            supabase.table('rutas_cache').insert({
+                'origen': origen,
+                'destino': destino,
+                'distancia_metros': distancia,
+                'duracion_segundos': duracion
+            }).execute()
+        except:
+            pass  # Si falla el guardado, no es crítico
+    
+    def get_distance_duration(self, origen, destino):
+        """Obtiene distancia y duración, usando caché si existe"""
+        # Intentar caché primero
+        cached_dist, cached_dur = self.get_route_from_cache(origen, destino)
+        if cached_dist and cached_dur:
+            return cached_dist, cached_dur
+        
+        # Si no hay caché, llamar a la API
+        try:
+            result = self.gmaps.distance_matrix(origen, destino, mode="driving")
+            distancia = result['rows'][0]['elements'][0]['distance']['value']
+            duracion = result['rows'][0]['elements'][0]['duration']['value']
+            
+            # Guardar en caché para futuro
+            self.save_route_to_cache(origen, destino, distancia, duracion)
+            
+            return distancia, duracion
+        except:
+            return None, None
+    
+    def build_distance_matrix(self, locations):
+        """Construye matriz de distancias optimizada con caché"""
+        n = len(locations)
+        dist_matrix = [[0] * n for _ in range(n)]
+        time_matrix = [[0] * n for _ in range(n)]
+        
+        # Preparar lista de pares que necesitan cálculo
+        pairs_to_fetch = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                # Intentar caché
+                dist, dur = self.get_route_from_cache(locations[i], locations[j])
+                if dist and dur:
+                    dist_matrix[i][j] = dist
+                    dist_matrix[j][i] = dist
+                    time_matrix[i][j] = dur
+                    time_matrix[j][i] = dur
+                else:
+                    pairs_to_fetch.append((i, j))
+        
+        # Batch API call para los que faltan
+        if pairs_to_fetch:
+            # Dividir en chunks para evitar límites de API
+            chunk_size = 25
+            for chunk_start in range(0, len(pairs_to_fetch), chunk_size):
+                chunk = pairs_to_fetch[chunk_start:chunk_start + chunk_size]
+                
+                origins = [locations[i] for i, j in chunk]
+                destinations = [locations[j] for i, j in chunk]
+                
+                try:
+                    result = self.gmaps.distance_matrix(origins, destinations, mode="driving")
+                    
+                    for idx, (i, j) in enumerate(chunk):
+                        if idx < len(result['rows']):
+                            element = result['rows'][idx]['elements'][0]
+                            if element['status'] == 'OK':
+                                dist = element['distance']['value']
+                                dur = element['duration']['value']
+                                
+                                dist_matrix[i][j] = dist
+                                dist_matrix[j][i] = dist
+                                time_matrix[i][j] = dur
+                                time_matrix[j][i] = dur
+                                
+                                # Guardar en caché
+                                self.save_route_to_cache(locations[i], locations[j], dist, dur)
+                except:
+                    # Si falla el batch, intentar uno por uno
+                    for i, j in chunk:
+                        dist, dur = self.get_distance_duration(locations[i], locations[j])
+                        if dist and dur:
+                            dist_matrix[i][j] = dist
+                            dist_matrix[j][i] = dist
+                            time_matrix[i][j] = dur
+                            time_matrix[j][i] = dur
+        
+        return dist_matrix, time_matrix
+    
+    def nearest_neighbor(self, time_matrix, duracion_visita_seg):
+        """Algoritmo Nearest Neighbor para construir ruta inicial"""
+        n = len(time_matrix)
+        if n == 0:
+            return [], 0
+        
+        unvisited = set(range(n))
+        current = 0  # Empezar desde el primer punto
+        route = [current]
+        unvisited.remove(current)
+        total_time = 0
+        
+        while unvisited:
+            nearest = min(unvisited, key=lambda x: time_matrix[current][x])
+            total_time += time_matrix[current][nearest] + duracion_visita_seg
+            route.append(nearest)
+            unvisited.remove(nearest)
+            current = nearest
+        
+        # Añadir la última visita sin viaje de vuelta
+        total_time += duracion_visita_seg
+        
+        return route, total_time
+    
+    def two_opt(self, route, time_matrix, duracion_visita_seg):
+        """Mejora la ruta usando 2-opt"""
+        improved = True
+        best_route = route[:]
+        
+        while improved:
+            improved = False
+            for i in range(1, len(route) - 1):
+                for j in range(i + 1, len(route)):
+                    # Intercambiar aristas
+                    new_route = route[:i] + route[i:j][::-1] + route[j:]
+                    
+                    # Calcular tiempo de la nueva ruta
+                    new_time = self._calculate_route_time(new_route, time_matrix, duracion_visita_seg)
+                    old_time = self._calculate_route_time(best_route, time_matrix, duracion_visita_seg)
+                    
+                    if new_time < old_time:
+                        best_route = new_route
+                        improved = True
+            
+            route = best_route[:]
+        
+        return best_route
+    
+    def _calculate_route_time(self, route, time_matrix, duracion_visita_seg):
+        """Calcula el tiempo total de una ruta"""
+        total = 0
+        for i in range(len(route) - 1):
+            total += time_matrix[route[i]][route[i+1]]
+        total += len(route) * duracion_visita_seg
+        return total
+    
+    def optimize_route(self, visitas, duracion_visita_seg=2700):
+        """
+        Optimiza una lista de visitas usando Nearest Neighbor + 2-opt
+        
+        Args:
+            visitas: Lista de diccionarios con 'direccion_texto'
+            duracion_visita_seg: Duración de cada visita en segundos (default 45min)
+        
+        Returns:
+            (visitas_ordenadas, tiempo_total_seg)
+        """
+        if not visitas or len(visitas) <= 1:
+            return visitas, len(visitas) * duracion_visita_seg
+        
+        # Extraer direcciones
+        locations = [v['direccion_texto'] for v in visitas]
+        
+        # Construir matriz de tiempos con caché
+        _, time_matrix = self.build_distance_matrix(locations)
+        
+        # Aplicar Nearest Neighbor
+        route_indices, _ = self.nearest_neighbor(time_matrix, duracion_visita_seg)
+        
+        # Mejorar con 2-opt (solo si hay más de 3 visitas)
+        if len(route_indices) > 3:
+            route_indices = self.two_opt(route_indices, time_matrix, duracion_visita_seg)
+        
+        # Calcular tiempo total final
+        total_time = self._calculate_route_time(route_indices, time_matrix, duracion_visita_seg)
+        
+        # Reordenar visitas según los índices
+        optimized_visitas = [visitas[i] for i in route_indices]
+        
+        return optimized_visitas, total_time
+    
+    def optimize_multiday(self, visitas_disponibles, dias_disponibles, duracion_visita_seg=2700, tiempo_jornada_func=None):
+        """
+        Distribuye y optimiza visitas en múltiples días
+        
+        Args:
+            visitas_disponibles: Lista de visitas
+            dias_disponibles: Lista de fechas (date objects)
+            duracion_visita_seg: Duración por visita
+            tiempo_jornada_func: Función que recibe weekday y retorna segundos de jornada
+        
+        Returns:
+            dict: {fecha_iso: [visitas_optimizadas]}
+        """
+        if not tiempo_jornada_func:
+            tiempo_jornada_func = lambda wd: 7*3600 if wd == 4 else 9*3600
+        
+        plan = {}
+        visitas_restantes = visitas_disponibles[:]
+        
+        for dia in dias_disponibles:
+            presupuesto = tiempo_jornada_func(dia.weekday())
+            visitas_dia = []
+            
+            # Asignar visitas hasta llenar el día
+            while visitas_restantes:
+                # Optimizar lo que llevamos hasta ahora + 1 nueva
+                candidato = visitas_dia + [visitas_restantes[0]]
+                _, tiempo = self.optimize_route(candidato, duracion_visita_seg)
+                
+                if tiempo <= presupuesto:
+                    visitas_dia.append(visitas_restantes.pop(0))
+                else:
+                    break
+            
+            # Optimizar el día completo
+            if visitas_dia:
+                visitas_optimizadas, _ = self.optimize_route(visitas_dia, duracion_visita_seg)
+                plan[dia.isoformat()] = visitas_optimizadas
+        
+        return plan, visitas_restantes
+
+
+# Función de utilidad para usar fácilmente
+def optimizar_ruta_visitas(visitas, duracion_visita_seg=2700):
+    """Función helper para optimizar una lista de visitas"""
+    optimizer = RouteOptimizer()
+    return optimizer.optimize_route(visitas, duracion_visita_seg)

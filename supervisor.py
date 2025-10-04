@@ -1,9 +1,8 @@
-# Fichero: supervisor.py (Sistema flexible: automático, manual e híbrido)
+# Fichero: supervisor.py (Sistema flexible con optimización mejorada)
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta, datetime, time
 import googlemaps
-import itertools
 import smtplib
 from email.mime.text import MIMEText
 import folium
@@ -11,6 +10,7 @@ from folium.features import DivIcon
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from database import supabase
+from route_optimizer import RouteOptimizer
 
 # --- CONSTANTES ---
 PUNTO_INICIO_MARTIN = "Plaça de Catalunya, Barcelona, España"
@@ -36,25 +36,15 @@ def get_daily_time_budget(weekday):
     """Devuelve la duración de la jornada en segundos (9h L-J, 7h V)"""
     return 7 * 3600 if weekday == 4 else 9 * 3600
 
-def calcular_tiempo_total_dia(visitas_dia, gmaps):
-    """Calcula el tiempo total de un día incluyendo viajes y visitas"""
+def calcular_tiempo_total_dia(visitas_dia, optimizer):
+    """Calcula el tiempo total de un día usando el optimizador"""
     if not visitas_dia:
         return 0
     
-    tiempo_total = len(visitas_dia) * DURACION_VISITA_SEGUNDOS
-    
-    if len(visitas_dia) > 1:
-        direcciones = [v['direccion_texto'] for v in visitas_dia]
-        try:
-            matrix = gmaps.distance_matrix(direcciones, direcciones, mode="driving")
-            for i in range(len(visitas_dia) - 1):
-                tiempo_total += matrix['rows'][i]['elements'][i+1]['duration']['value']
-        except:
-            pass
-    
-    return tiempo_total
+    _, tiempo = optimizer.optimize_route(visitas_dia, DURACION_VISITA_SEGUNDOS)
+    return tiempo
 
-# --- ALGORITMO AUTOMÁTICO ---
+# --- ALGORITMO AUTOMÁTICO OPTIMIZADO ---
 def generar_planificacion_automatica(dias_seleccionados):
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
@@ -72,51 +62,37 @@ def generar_planificacion_automatica(dias_seleccionados):
     visitas_obligatorias = [v for v in todas_las_visitas if v.get('ayuda_solicitada')]
     visitas_opcionales = [v for v in todas_las_visitas if not v.get('ayuda_solicitada') and v.get('status') == 'Propuesta']
 
-    gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
-    plan_final = {}
-    visitas_ya_planificadas_ids = set()
+    # Usar el nuevo optimizador
+    optimizer = RouteOptimizer()
     
-    for dia_laboral in dias_seleccionados:
-        presupuesto_tiempo_dia = get_daily_time_budget(dia_laboral.weekday())
-        obligatorias_restantes = [v for v in visitas_obligatorias if v['id'] not in visitas_ya_planificadas_ids]
-        opcionales_restantes = [v for v in visitas_opcionales if v['id'] not in visitas_ya_planificadas_ids]
-        visitas_disponibles_hoy = obligatorias_restantes + opcionales_restantes
-        
-        if not visitas_disponibles_hoy: continue
-
-        mejor_ruta_del_dia, mejor_puntuacion = [], (-1, -1, float('-inf'))
-        
-        for cantidad in range(len(visitas_disponibles_hoy), 0, -1):
-            for combo in itertools.combinations(visitas_disponibles_hoy, cantidad):
-                for orden in itertools.permutations(combo):
-                    tiempo_de_trabajo = len(orden) * DURACION_VISITA_SEGUNDOS
-                    if len(orden) > 1:
-                        direcciones_ruta = [v['direccion_texto'] for v in orden]
-                        matrix = gmaps.distance_matrix(direcciones_ruta, direcciones_ruta, mode="driving")
-                        for i in range(len(orden) - 1):
-                            tiempo_de_trabajo += matrix['rows'][i]['elements'][i+1]['duration']['value']
-
-                    if tiempo_de_trabajo <= presupuesto_tiempo_dia:
-                        num_obligatorias = sum(1 for v in combo if v.get('ayuda_solicitada'))
-                        puntuacion_actual = (num_obligatorias, len(combo), -tiempo_de_trabajo)
-                        
-                        if puntuacion_actual > mejor_puntuacion:
-                            mejor_puntuacion, mejor_ruta_del_dia = puntuacion_actual, list(orden)
-            
-            if mejor_ruta_del_dia: break
-
-        if mejor_ruta_del_dia:
-            plan_final[dia_laboral.isoformat()] = mejor_ruta_del_dia
-            visitas_ya_planificadas_ids.update({v['id'] for v in mejor_ruta_del_dia})
-
-    visitas_no_planificadas = [v for v in todas_las_visitas if v['id'] not in visitas_ya_planificadas_ids and v.get('status') == 'Propuesta']
+    # Priorizar obligatorias primero
+    todas_visitas = visitas_obligatorias + visitas_opcionales
     
+    # Optimizar multidía
+    plan_final, visitas_no_planificadas = optimizer.optimize_multiday(
+        todas_visitas,
+        dias_seleccionados,
+        DURACION_VISITA_SEGUNDOS,
+        get_daily_time_budget
+    )
+    
+    # Verificar que todas las obligatorias están incluidas
+    ids_planificadas = set()
+    for visitas_dia in plan_final.values():
+        ids_planificadas.update([v['id'] for v in visitas_dia])
+    
+    obligatorias_no_planificadas = [v for v in visitas_obligatorias if v['id'] not in ids_planificadas]
+    if obligatorias_no_planificadas:
+        st.error("¡Atención! Las siguientes visitas con ayuda solicitada no pudieron ser incluidas en el plan por falta de tiempo:")
+        for v in obligatorias_no_planificadas:
+            st.error(f"- {v['direccion_texto']} (Coordinador: {v['nombre_coordinador']})")
+
     return plan_final, visitas_no_planificadas
 
 # --- CALCULAR HORAS PARA PLAN ---
 def calcular_horas_plan(plan):
     """Calcula las horas de llegada para cada visita del plan"""
-    gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
+    optimizer = RouteOptimizer()
     plan_con_horas = {}
     
     for day_iso, visitas in plan.items():
@@ -132,11 +108,12 @@ def calcular_horas_plan(plan):
             for i in range(len(visitas) - 1):
                 hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
                 origen, destino = visitas[i]['direccion_texto'], visitas[i+1]['direccion_texto']
-                try:
-                    tiempo_viaje = gmaps.distance_matrix(origen, destino, mode="driving")['rows'][0]['elements'][0]['duration']['value']
+                
+                _, tiempo_viaje = optimizer.get_distance_duration(origen, destino)
+                if tiempo_viaje:
                     hora_actual += timedelta(seconds=tiempo_viaje)
-                except:
-                    hora_actual += timedelta(minutes=30)
+                else:
+                    hora_actual += timedelta(minutes=30)  # Fallback
                 
                 v_siguiente = visitas[i+1].copy()
                 v_siguiente['hora_asignada'] = hora_actual.strftime('%H:%M')
@@ -150,7 +127,7 @@ def calcular_horas_plan(plan):
 def renderizar_mapa_plan(plan_con_horas):
     m = folium.Map(location=CATALONIA_CENTER, zoom_start=8)
     try:
-        location = Nominatim(user_agent="supervisor_map_v10").geocode(PUNTO_INICIO_MARTIN)
+        location = Nominatim(user_agent="supervisor_map_v11").geocode(PUNTO_INICIO_MARTIN)
         if location: 
             folium.Marker([location.latitude, location.longitude], popup="Punto de Salida de Martín", icon=folium.Icon(color='green', icon='home', prefix='fa')).add_to(m)
     except: 
@@ -188,7 +165,7 @@ def renderizar_mapa_plan(plan_con_horas):
 # --- MODO AUTOMÁTICO ---
 def modo_automatico():
     st.subheader("🤖 Modo Automático")
-    st.info("El algoritmo generará la planificación óptima priorizando visitas con ayuda solicitada.")
+    st.info("El algoritmo optimizado generará la mejor planificación priorizando visitas con ayuda solicitada.")
     
     today = date.today()
     start_of_next_week = today + timedelta(days=-today.weekday(), weeks=1)
@@ -208,7 +185,7 @@ def modo_automatico():
         if len(dias_seleccionados) != num_dias:
             st.warning(f"Por favor, selecciona exactamente {num_dias} días.")
         else:
-            with st.spinner("🧠 Calculando la mejor distribución..."):
+            with st.spinner("🧠 Optimizando rutas con algoritmo mejorado..."):
                 dias_seleccionados.sort()
                 plan, no_asignadas = generar_planificacion_automatica(dias_seleccionados)
                 
@@ -216,7 +193,7 @@ def modo_automatico():
                     st.session_state.plan_propuesto = plan
                     st.session_state.plan_con_horas = calcular_horas_plan(plan)
                     st.session_state.visitas_no_asignadas = no_asignadas
-                    st.success("¡Planificación generada con éxito!")
+                    st.success("✅ Planificación generada con algoritmo optimizado!")
                     st.rerun()
 
 # --- MODO MANUAL ---
@@ -251,6 +228,7 @@ def modo_manual():
     visitas_disponibles = [v for v in todas_las_visitas if v['id'] not in ids_asignadas and v.get('status') == 'Propuesta']
     
     col1, col2 = st.columns([3, 2])
+    optimizer = RouteOptimizer()
     
     with col1:
         st.markdown("##### Visitas Disponibles")
@@ -276,10 +254,9 @@ def modo_manual():
                             dia_iso = dia_seleccionado.isoformat()
                             
                             # Verificar límite de jornada
-                            gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
                             visitas_del_dia = st.session_state.plan_manual.get(dia_iso, [])
-                            tiempo_actual = calcular_tiempo_total_dia(visitas_del_dia, gmaps)
-                            tiempo_con_nueva = calcular_tiempo_total_dia(visitas_del_dia + [visita], gmaps)
+                            tiempo_actual = calcular_tiempo_total_dia(visitas_del_dia, optimizer)
+                            tiempo_con_nueva = calcular_tiempo_total_dia(visitas_del_dia + [visita], optimizer)
                             limite_dia = get_daily_time_budget(dia_seleccionado.weekday())
                             
                             if tiempo_con_nueva > limite_dia:
@@ -295,11 +272,10 @@ def modo_manual():
     with col2:
         st.markdown("##### Plan Actual")
         if st.session_state.plan_manual:
-            gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
             for dia_iso in sorted(st.session_state.plan_manual.keys()):
                 dia = date.fromisoformat(dia_iso)
                 visitas = st.session_state.plan_manual[dia_iso]
-                tiempo_total = calcular_tiempo_total_dia(visitas, gmaps)
+                tiempo_total = calcular_tiempo_total_dia(visitas, optimizer)
                 limite = get_daily_time_budget(dia.weekday())
                 
                 with st.expander(f"**{dia.strftime('%A %d/%m')}** ({len(visitas)} visitas - {tiempo_total/3600:.1f}h)", expanded=True):
@@ -332,7 +308,7 @@ def modo_manual():
 # --- MODO HÍBRIDO ---
 def modo_hibrido():
     st.subheader("🔄 Modo Híbrido")
-    st.info("Genera una propuesta automática y edítala antes de confirmar.")
+    st.info("Genera una propuesta automática optimizada y edítala antes de confirmar.")
     
     if 'plan_hibrido' not in st.session_state:
         # Paso 1: Generar propuesta automática
@@ -351,17 +327,17 @@ def modo_hibrido():
             key="hibrido_select"
         )
 
-        if st.button("🤖 Generar Propuesta Inicial", type="primary", use_container_width=True):
+        if st.button("🤖 Generar Propuesta Inicial Optimizada", type="primary", use_container_width=True):
             if len(dias_seleccionados) != num_dias:
                 st.warning(f"Por favor, selecciona exactamente {num_dias} días.")
             else:
-                with st.spinner("🧠 Generando propuesta base..."):
+                with st.spinner("🧠 Generando propuesta optimizada..."):
                     dias_seleccionados.sort()
                     plan, no_asignadas = generar_planificacion_automatica(dias_seleccionados)
                     
                     if plan:
                         st.session_state.plan_hibrido = plan
-                        st.success("✅ Propuesta generada. Ahora puedes editarla.")
+                        st.success("✅ Propuesta optimizada generada. Ahora puedes editarla.")
                         st.rerun()
     else:
         # Paso 2: Editar propuesta
@@ -383,7 +359,7 @@ def modo_hibrido():
         
         visitas_fuera_plan = [v for v in todas_visitas if v['id'] not in ids_en_plan and v.get('status') == 'Propuesta']
         
-        gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
+        optimizer = RouteOptimizer()
         
         for dia_iso in sorted(st.session_state.plan_hibrido.keys()):
             dia = date.fromisoformat(dia_iso)
@@ -420,8 +396,8 @@ def modo_hibrido():
                     )
                     
                     if nueva_visita:
-                        tiempo_actual = calcular_tiempo_total_dia(visitas_dia, gmaps)
-                        tiempo_con_nueva = calcular_tiempo_total_dia(visitas_dia + [nueva_visita], gmaps)
+                        tiempo_actual = calcular_tiempo_total_dia(visitas_dia, optimizer)
+                        tiempo_con_nueva = calcular_tiempo_total_dia(visitas_dia + [nueva_visita], optimizer)
                         limite = get_daily_time_budget(dia.weekday())
                         
                         if tiempo_con_nueva > limite:
@@ -431,7 +407,7 @@ def modo_hibrido():
                             st.rerun()
                 
                 # Mostrar tiempo total
-                tiempo_total = calcular_tiempo_total_dia(visitas_dia, gmaps)
+                tiempo_total = calcular_tiempo_total_dia(visitas_dia, optimizer)
                 limite = get_daily_time_budget(dia.weekday())
                 st.caption(f"⏱️ Tiempo total: {tiempo_total/3600:.1f}h / {limite/3600:.1f}h")
         
