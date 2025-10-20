@@ -5,7 +5,8 @@
       "Bash(dir:*)",
       "Bash(python -m py_compile:*)",
       "Bash(python:*)",
-      "Bash(timeout 5 streamlit run:*)"
+      "Bash(timeout 5 streamlit run:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -23,17 +23,19 @@ from database import supabase
 
 # ==================== SERVICIOS SINGLETON ====================
 
-@st.cache_resource
 def get_services():
-    """Inicializa y cachea todos los servicios"""
-    optimizer = RouteOptimizer()
-    return {
-        'optimizer': optimizer,
-        'balancer': BalancingService(optimizer),
-        'scorer': ScoringService(optimizer),
-        'manager': PlanManager(optimizer),
-        'ui': UIComponents()
-    }
+    """Inicializa y cachea todos los servicios en session_state"""
+    # Usar session_state para mantener las instancias entre reruns
+    if 'services' not in st.session_state:
+        optimizer = RouteOptimizer()
+        st.session_state.services = {
+            'optimizer': optimizer,
+            'balancer': BalancingService(optimizer),
+            'scorer': ScoringService(optimizer),
+            'manager': PlanManager(optimizer),
+            'ui': UIComponents()
+        }
+    return st.session_state.services
 
 
 # ==================== UTILIDADES DE EMAIL ====================
@@ -652,5 +654,5 @@ def mostrar_planificador_supervisor():
 
 # ==================== PUNTO DE ENTRADA ====================
 
-# Ejecutar la aplicación directamente (Streamlit requiere que se ejecute en el nivel del módulo)
+# Llamar a la función principal cuando el archivo sea ejecutado
 mostrar_planificador_supervisor()
