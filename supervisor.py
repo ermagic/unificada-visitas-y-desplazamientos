@@ -654,5 +654,7 @@ def mostrar_planificador_supervisor():
 
 # ==================== PUNTO DE ENTRADA ====================
 
-# Ejecutar la aplicación cuando el módulo sea cargado por Streamlit
-mostrar_planificador_supervisor()
+# IMPORTANTE: Este archivo NO debe ejecutar automáticamente la función principal
+# ya que puede ser importado desde un sistema de navegación multipágina.
+# Si necesitas ejecutarlo directamente, descomenta la siguiente línea:
+# mostrar_planificador_supervisor()
