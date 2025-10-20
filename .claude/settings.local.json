@@ -8,7 +8,11 @@
       "Bash(timeout 5 streamlit run:*)",
       "Bash(find:*)",
       "Read(//c/Users/ancos/**)",
-      "Bash(timeout 3 streamlit run:*)"
+      "Bash(timeout 3 streamlit run:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"=== $f ===\")",
+      "Bash(tail:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
