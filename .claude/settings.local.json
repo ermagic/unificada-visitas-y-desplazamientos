@@ -12,7 +12,9 @@
       "Bash(for:*)",
       "Bash(do echo \"=== $f ===\")",
       "Bash(tail:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
