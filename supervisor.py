@@ -648,3 +648,9 @@ def mostrar_planificador_supervisor():
 
     with tab_revisar:
         revisar_plan()
+
+
+# ==================== PUNTO DE ENTRADA ====================
+
+# Ejecutar la aplicación directamente (Streamlit requiere que se ejecute en el nivel del módulo)
+mostrar_planificador_supervisor()
