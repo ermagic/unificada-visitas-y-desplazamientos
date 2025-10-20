@@ -89,63 +89,80 @@ def mostrar_planificador_coordinador():
             st.warning("Por favor, selecciona al menos una visita para planificar.")
             st.stop()
 
-        with st.spinner("🧠 Optimizando rutas con algoritmo mejorado..."):
-            st.session_state.plan_propuesto = None
-            
-            # Crear optimizador
-            optimizer = RouteOptimizer()
-            
-            # Añadir punto de inicio como primera "visita" temporal
-            visitas_con_inicio = [{'direccion_texto': punto_inicio, 'id': 'inicio'}] + visitas_a_planificar
-            
-            if num_dias == 1:
-                # Optimizar para un solo día
-                visitas_ordenadas, tiempo_total = optimizer.optimize_route(
-                    visitas_con_inicio, 
-                    DURACION_VISITA_SEGUNDOS
-                )
-                
-                # Quitar el punto de inicio
-                visitas_ordenadas = [v for v in visitas_ordenadas if v['id'] != 'inicio']
-                
-                # Verificar que cabe en la jornada
-                budget = get_daily_time_budget(fechas_seleccionadas[0].weekday())
-                if tiempo_total <= budget:
-                    plan_final = {fechas_seleccionadas[0]: {'ruta': visitas_ordenadas, 'tiempo_total': tiempo_total}}
-                else:
-                    # Recortar visitas hasta que quepa
-                    visitas_que_caben = []
-                    tiempo_acumulado = 0
-                    for v in visitas_ordenadas:
-                        tiempo_prueba = tiempo_acumulado + DURACION_VISITA_SEGUNDOS
-                        if len(visitas_que_caben) > 0:
-                            # Añadir tiempo de viaje (estimado)
-                            tiempo_prueba += 1800  # 30 min aprox
-                        
-                        if tiempo_prueba <= budget:
-                            visitas_que_caben.append(v)
-                            tiempo_acumulado = tiempo_prueba
-                        else:
-                            break
-                    
-                    plan_final = {fechas_seleccionadas[0]: {'ruta': visitas_que_caben, 'tiempo_total': tiempo_acumulado}}
-                    visitas_no_asignadas = [v for v in visitas_ordenadas if v not in visitas_que_caben]
-            
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        status_text.text("🔍 Preparando visitas...")
+        progress_bar.progress(10)
+
+        st.session_state.plan_propuesto = None
+
+        # Crear optimizador
+        optimizer = RouteOptimizer()
+
+        # Añadir punto de inicio como primera "visita" temporal
+        visitas_con_inicio = [{'direccion_texto': punto_inicio, 'id': 'inicio'}] + visitas_a_planificar
+
+        status_text.text("🧠 Optimizando rutas con algoritmo mejorado...")
+        progress_bar.progress(30)
+
+        if num_dias == 1:
+            # Optimizar para un solo día
+            visitas_ordenadas, tiempo_total = optimizer.optimize_route(
+                visitas_con_inicio,
+                DURACION_VISITA_SEGUNDOS
+            )
+
+            progress_bar.progress(70)
+            status_text.text("📊 Verificando capacidad de jornada...")
+
+            # Quitar el punto de inicio
+            visitas_ordenadas = [v for v in visitas_ordenadas if v['id'] != 'inicio']
+
+            # Verificar que cabe en la jornada
+            budget = get_daily_time_budget(fechas_seleccionadas[0].weekday())
+            if tiempo_total <= budget:
+                plan_final = {fechas_seleccionadas[0]: {'ruta': visitas_ordenadas, 'tiempo_total': tiempo_total}}
             else:
-                # Optimizar para múltiples días
-                plan_final, visitas_no_asignadas = optimizer.optimize_multiday(
-                    visitas_a_planificar,
-                    fechas_seleccionadas,
-                    DURACION_VISITA_SEGUNDOS,
-                    get_daily_time_budget
-                )
-            
-            st.session_state.plan_propuesto = {
-                'plan': plan_final, 
-                'no_asignadas': visitas_no_asignadas if num_dias > 1 or 'visitas_no_asignadas' in locals() else [],
-                'punto_inicio': punto_inicio
-            }
-            st.rerun()
+                # Recortar visitas hasta que quepa
+                visitas_que_caben = []
+                tiempo_acumulado = 0
+                for v in visitas_ordenadas:
+                    tiempo_prueba = tiempo_acumulado + DURACION_VISITA_SEGUNDOS
+                    if len(visitas_que_caben) > 0:
+                        # Añadir tiempo de viaje (estimado)
+                        tiempo_prueba += 1800  # 30 min aprox
+
+                    if tiempo_prueba <= budget:
+                        visitas_que_caben.append(v)
+                        tiempo_acumulado = tiempo_prueba
+                    else:
+                        break
+
+                plan_final = {fechas_seleccionadas[0]: {'ruta': visitas_que_caben, 'tiempo_total': tiempo_acumulado}}
+                visitas_no_asignadas = [v for v in visitas_ordenadas if v not in visitas_que_caben]
+
+        else:
+            # Optimizar para múltiples días
+            plan_final, visitas_no_asignadas = optimizer.optimize_multiday(
+                visitas_a_planificar,
+                fechas_seleccionadas,
+                DURACION_VISITA_SEGUNDOS,
+                get_daily_time_budget
+            )
+
+            progress_bar.progress(70)
+            status_text.text("⏰ Finalizando plan...")
+
+        progress_bar.progress(100)
+        status_text.text("✅ Planificación completada!")
+
+        st.session_state.plan_propuesto = {
+            'plan': plan_final,
+            'no_asignadas': visitas_no_asignadas if num_dias > 1 or 'visitas_no_asignadas' in locals() else [],
+            'punto_inicio': punto_inicio
+        }
+        st.rerun()
 
     # --- 3. RESULTADOS ---
     if 'plan_propuesto' in st.session_state and st.session_state.plan_propuesto:
@@ -162,14 +179,17 @@ def mostrar_planificador_coordinador():
         for fecha, datos_ruta in sorted(plan_data['plan'].items()):
             if isinstance(fecha, str):
                 fecha = date.fromisoformat(fecha)
-            
-            with st.expander(f"**🗓️ Plan para el {fecha.strftime('%A, %d/%m/%Y')}** ({len(datos_ruta['ruta'])} visitas)", expanded=True):
+
+            # Manejar ambos formatos (dict con 'ruta' y lista simple)
+            ruta_visitas = datos_ruta['ruta'] if isinstance(datos_ruta, dict) else datos_ruta
+
+            with st.expander(f"**🗓️ Plan para el {fecha.strftime('%A, %d/%m/%Y')}** ({len(ruta_visitas)} visitas)", expanded=True):
                 hora_actual = datetime.combine(fecha, time(8, 0))
-                
-                for idx, visita in enumerate(datos_ruta['ruta']):
+
+                for idx, visita in enumerate(ruta_visitas):
                     if idx > 0:
                         # Calcular tiempo de viaje desde la visita anterior
-                        origen = datos_ruta['ruta'][idx-1]['direccion_texto']
+                        origen = ruta_visitas[idx-1]['direccion_texto']
                         destino = visita['direccion_texto']
                         _, tiempo_viaje = optimizer.get_distance_duration(origen, destino)
                         if tiempo_viaje:
@@ -179,11 +199,13 @@ def mostrar_planificador_coordinador():
                         _, tiempo_viaje = optimizer.get_distance_duration(plan_data['punto_inicio'], visita['direccion_texto'])
                         if tiempo_viaje:
                             hora_actual += timedelta(seconds=tiempo_viaje)
-                    
+
                     st.markdown(f"- **🕣 {hora_actual.strftime('%H:%M')}** - **{visita['direccion_texto']}** (Equipo: *{visita['equipo']}*)")
                     hora_actual += timedelta(seconds=DURACION_VISITA_SEGUNDOS)
 
-                tiempo_total_horas = datos_ruta['tiempo_total'] / 3600
+                # Calcular tiempo total (manejar ambos formatos)
+                tiempo_total_seg = datos_ruta['tiempo_total'] if isinstance(datos_ruta, dict) and 'tiempo_total' in datos_ruta else len(ruta_visitas) * DURACION_VISITA_SEGUNDOS
+                tiempo_total_horas = tiempo_total_seg / 3600
                 st.info(f"🕣 Tiempo total estimado de jornada: **{tiempo_total_horas:.2f} horas**.")
 
         if plan_data.get('no_asignadas'):

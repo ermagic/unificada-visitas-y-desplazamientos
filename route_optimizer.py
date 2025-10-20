@@ -3,11 +3,15 @@ import googlemaps
 from datetime import datetime, timedelta
 from database import supabase
 import streamlit as st
+from config import (
+    CACHE_TTL_DIAS, GOOGLE_MAPS_CHUNK_SIZE,
+    LIMITE_VISITAS_2OPT, MAX_ITERACIONES_2OPT
+)
 
 class RouteOptimizer:
     def __init__(self):
         self.gmaps = googlemaps.Client(key=st.secrets["google"]["api_key"])
-        self.cache_ttl_days = 30  # Tiempo de vida del caché
+        self.cache_ttl_days = CACHE_TTL_DIAS
     
     def get_route_from_cache(self, origen, destino):
         """Intenta recuperar una ruta del caché"""
@@ -84,7 +88,7 @@ class RouteOptimizer:
         # Batch API call para los que faltan
         if pairs_to_fetch:
             # Dividir en chunks para evitar límites de API
-            chunk_size = 25
+            chunk_size = GOOGLE_MAPS_CHUNK_SIZE
             for chunk_start in range(0, len(pairs_to_fetch), chunk_size):
                 chunk = pairs_to_fetch[chunk_start:chunk_start + chunk_size]
                 
@@ -144,28 +148,30 @@ class RouteOptimizer:
         
         return route, total_time
     
-    def two_opt(self, route, time_matrix, duracion_visita_seg):
-        """Mejora la ruta usando 2-opt"""
+    def two_opt(self, route, time_matrix, duracion_visita_seg, max_iterations=100):
+        """Mejora la ruta usando 2-opt con límite de iteraciones"""
         improved = True
         best_route = route[:]
-        
-        while improved:
+        iterations = 0
+
+        while improved and iterations < max_iterations:
+            iterations += 1
             improved = False
             for i in range(1, len(route) - 1):
                 for j in range(i + 1, len(route)):
                     # Intercambiar aristas
                     new_route = route[:i] + route[i:j][::-1] + route[j:]
-                    
+
                     # Calcular tiempo de la nueva ruta
                     new_time = self._calculate_route_time(new_route, time_matrix, duracion_visita_seg)
                     old_time = self._calculate_route_time(best_route, time_matrix, duracion_visita_seg)
-                    
+
                     if new_time < old_time:
                         best_route = new_route
                         improved = True
-            
+
             route = best_route[:]
-        
+
         return best_route
     
     def _calculate_route_time(self, route, time_matrix, duracion_visita_seg):
@@ -175,81 +181,144 @@ class RouteOptimizer:
             total += time_matrix[route[i]][route[i+1]]
         total += len(route) * duracion_visita_seg
         return total
+
+    def _find_nearest(self, visita_base, visitas_candidatas):
+        """
+        Encuentra la visita más cercana a visita_base dentro de visitas_candidatas
+
+        Args:
+            visita_base: Visita de referencia
+            visitas_candidatas: Lista de visitas entre las que buscar
+
+        Returns:
+            índice de la visita más cercana en visitas_candidatas
+        """
+        if not visitas_candidatas:
+            return None
+
+        mejor_idx = 0
+        mejor_tiempo = float('inf')
+
+        for idx, candidata in enumerate(visitas_candidatas):
+            _, tiempo = self.get_distance_duration(
+                visita_base['direccion_texto'],
+                candidata['direccion_texto']
+            )
+
+            if tiempo and tiempo < mejor_tiempo:
+                mejor_tiempo = tiempo
+                mejor_idx = idx
+
+        return mejor_idx
     
     def optimize_route(self, visitas, duracion_visita_seg=2700):
         """
         Optimiza una lista de visitas usando Nearest Neighbor + 2-opt
-        
+
         Args:
             visitas: Lista de diccionarios con 'direccion_texto'
             duracion_visita_seg: Duración de cada visita en segundos (default 45min)
-        
+
         Returns:
             (visitas_ordenadas, tiempo_total_seg)
         """
         if not visitas or len(visitas) <= 1:
             return visitas, len(visitas) * duracion_visita_seg
-        
+
         # Extraer direcciones
         locations = [v['direccion_texto'] for v in visitas]
-        
+
         # Construir matriz de tiempos con caché
         _, time_matrix = self.build_distance_matrix(locations)
-        
+
         # Aplicar Nearest Neighbor
         route_indices, _ = self.nearest_neighbor(time_matrix, duracion_visita_seg)
-        
-        # Mejorar con 2-opt (solo si hay más de 3 visitas)
-        if len(route_indices) > 3:
-            route_indices = self.two_opt(route_indices, time_matrix, duracion_visita_seg)
-        
+
+        # Mejorar con 2-opt SOLO para rutas pequeñas/medianas
+        # Para rutas grandes, Nearest Neighbor es suficiente y mucho más rápido
+        if 3 < len(route_indices) <= LIMITE_VISITAS_2OPT:
+            route_indices = self.two_opt(route_indices, time_matrix, duracion_visita_seg, max_iterations=MAX_ITERACIONES_2OPT)
+
         # Calcular tiempo total final
         total_time = self._calculate_route_time(route_indices, time_matrix, duracion_visita_seg)
-        
+
         # Reordenar visitas según los índices
         optimized_visitas = [visitas[i] for i in route_indices]
-        
+
         return optimized_visitas, total_time
     
     def optimize_multiday(self, visitas_disponibles, dias_disponibles, duracion_visita_seg=2700, tiempo_jornada_func=None):
         """
-        Distribuye y optimiza visitas en múltiples días
-        
+        Distribuye y optimiza visitas en múltiples días usando heurística greedy inteligente
+
         Args:
             visitas_disponibles: Lista de visitas
             dias_disponibles: Lista de fechas (date objects)
             duracion_visita_seg: Duración por visita
             tiempo_jornada_func: Función que recibe weekday y retorna segundos de jornada
-        
+
         Returns:
-            dict: {fecha_iso: [visitas_optimizadas]}
+            (plan_dict, visitas_no_asignadas)
+            plan_dict: {fecha_iso: {'ruta': [visitas_optimizadas], 'tiempo_total': segundos}}
+            visitas_no_asignadas: lista de visitas que no cupieron
         """
         if not tiempo_jornada_func:
             tiempo_jornada_func = lambda wd: 7*3600 if wd == 4 else 9*3600
-        
+
         plan = {}
         visitas_restantes = visitas_disponibles[:]
-        
+
         for dia in dias_disponibles:
             presupuesto = tiempo_jornada_func(dia.weekday())
             visitas_dia = []
-            
-            # Asignar visitas hasta llenar el día
+            tiempo_acumulado = 0
+
+            # ESTRATEGIA GREEDY: Añadir visitas una a una de forma inteligente
             while visitas_restantes:
-                # Optimizar lo que llevamos hasta ahora + 1 nueva
-                candidato = visitas_dia + [visitas_restantes[0]]
-                _, tiempo = self.optimize_route(candidato, duracion_visita_seg)
-                
-                if tiempo <= presupuesto:
-                    visitas_dia.append(visitas_restantes.pop(0))
+                if not visitas_dia:
+                    # Primera visita del día: tomar la primera disponible
+                    candidata = visitas_restantes[0]
+                    tiempo_nueva = duracion_visita_seg
                 else:
+                    # Buscar la visita más cercana a la última añadida
+                    idx_cercana = self._find_nearest(visitas_dia[-1], visitas_restantes)
+                    if idx_cercana is None:
+                        break
+
+                    candidata = visitas_restantes[idx_cercana]
+
+                    # Calcular tiempo de viaje desde la última visita
+                    _, tiempo_viaje = self.get_distance_duration(
+                        visitas_dia[-1]['direccion_texto'],
+                        candidata['direccion_texto']
+                    )
+
+                    tiempo_nueva = duracion_visita_seg + (tiempo_viaje if tiempo_viaje else 1800)
+
+                # Verificar si cabe en el presupuesto
+                if tiempo_acumulado + tiempo_nueva <= presupuesto:
+                    visitas_dia.append(candidata)
+                    visitas_restantes.remove(candidata)
+                    tiempo_acumulado += tiempo_nueva
+                else:
+                    # No cabe más, pasar al siguiente día
                     break
-            
-            # Optimizar el día completo
+
+            # Optimizar el día completo UNA SOLA VEZ al final (si tiene pocas visitas)
             if visitas_dia:
-                visitas_optimizadas, _ = self.optimize_route(visitas_dia, duracion_visita_seg)
-                plan[dia.isoformat()] = visitas_optimizadas
-        
+                if len(visitas_dia) <= LIMITE_VISITAS_2OPT:
+                    # Para días pequeños, vale la pena optimizar
+                    visitas_optimizadas, tiempo_final = self.optimize_route(visitas_dia, duracion_visita_seg)
+                else:
+                    # Para días grandes, usar el orden greedy (ya es bueno)
+                    visitas_optimizadas = visitas_dia
+                    tiempo_final = tiempo_acumulado
+
+                plan[dia.isoformat()] = {
+                    'ruta': visitas_optimizadas,
+                    'tiempo_total': tiempo_final
+                }
+
         return plan, visitas_restantes
 
 
