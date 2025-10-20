@@ -6,7 +6,9 @@
       "Bash(python -m py_compile:*)",
       "Bash(python:*)",
       "Bash(timeout 5 streamlit run:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Read(//c/Users/ancos/**)",
+      "Bash(timeout 3 streamlit run:*)"
     ],
     "deny": [],
     "ask": []
